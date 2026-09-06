@@ -1,0 +1,207 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "服务会话处理与未解决归因流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": "flowchart_classic.html"
+  },
+  "lanes": [
+    {
+      "id": "ui",
+      "label": "接入层"
+    },
+    {
+      "id": "service",
+      "label": "服务履约"
+    },
+    {
+      "id": "outcome",
+      "label": "服务结果"
+    },
+    {
+      "id": "analysis",
+      "label": "未解决分析"
+    }
+  ],
+  "phases": [
+    {
+      "id": "intake",
+      "label": "接入与识别",
+      "fromCol": 0,
+      "toCol": 2
+    },
+    {
+      "id": "delivery",
+      "label": "按意图履约",
+      "fromCol": 3,
+      "toCol": 5,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "user",
+    "intent",
+    "router",
+    "insure",
+    "resolved"
+  ],
+  "nodes": [
+    {
+      "id": "user",
+      "lane": "ui",
+      "col": 0,
+      "type": "external",
+      "label": "用户会话",
+      "sublabel": "本周全量会话"
+    },
+    {
+      "id": "intent",
+      "lane": "ui",
+      "col": 1,
+      "type": "backend",
+      "label": "意图识别",
+      "sublabel": "九类一级意图"
+    },
+    {
+      "id": "router",
+      "lane": "ui",
+      "col": 2,
+      "type": "backend",
+      "label": "分流路由",
+      "sublabel": "自助 / 人工"
+    },
+    {
+      "id": "insure",
+      "lane": "service",
+      "col": 3,
+      "type": "frontend",
+      "label": "投保·查询·续保",
+      "sublabel": "高解决率意图组"
+    },
+    {
+      "id": "motor",
+      "lane": "service",
+      "col": 4,
+      "type": "backend",
+      "label": "车险服务",
+      "sublabel": "解决率偏低 · 无法报价"
+    },
+    {
+      "id": "complaint",
+      "lane": "service",
+      "col": 5,
+      "type": "security",
+      "label": "投诉与风险",
+      "sublabel": "解决率最低"
+    },
+    {
+      "id": "resolved",
+      "lane": "outcome",
+      "col": 3,
+      "type": "frontend",
+      "label": "当日解决",
+      "sublabel": "解决 · 表内推算口径"
+    },
+    {
+      "id": "unresolved",
+      "lane": "outcome",
+      "col": 4,
+      "type": "security",
+      "label": "当日未解决",
+      "sublabel": "未解决 · 表内推算口径"
+    },
+    {
+      "id": "reasons",
+      "lane": "analysis",
+      "col": 4,
+      "type": "database",
+      "label": "未解决原因分析",
+      "sublabel": "未解决抽样归因"
+    },
+    {
+      "id": "actions",
+      "lane": "analysis",
+      "col": 5,
+      "type": "backend",
+      "label": "四项改进行动",
+      "sublabel": "报价·值守·拦截·多模态",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "id": "user-intent",
+      "from": "user",
+      "to": "intent",
+      "label": "发起咨询",
+      "variant": "default"
+    },
+    {
+      "id": "intent-router",
+      "from": "intent",
+      "to": "router",
+      "label": "意图分类",
+      "variant": "default"
+    },
+    {
+      "id": "router-insure",
+      "from": "router",
+      "to": "insure",
+      "label": "常规咨询类",
+      "variant": "emphasis"
+    },
+    {
+      "id": "router-motor",
+      "from": "router",
+      "to": "motor",
+      "label": "车险专区",
+      "variant": "default"
+    },
+    {
+      "id": "router-complaint",
+      "from": "router",
+      "to": "complaint",
+      "label": "投诉与风险",
+      "variant": "security"
+    },
+    {
+      "id": "insure-resolved",
+      "from": "insure",
+      "to": "resolved",
+      "label": "多数当日解决",
+      "variant": "emphasis"
+    },
+    {
+      "id": "motor-unresolved",
+      "from": "motor",
+      "to": "unresolved",
+      "label": "报价失败",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "complaint-unresolved",
+      "from": "complaint",
+      "to": "unresolved",
+      "label": "解决率最低",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "unresolved-reasons",
+      "from": "unresolved",
+      "to": "reasons",
+      "label": "抽样归因",
+      "variant": "dashed"
+    },
+    {
+      "id": "reasons-actions",
+      "from": "reasons",
+      "to": "actions",
+      "label": "按量级排序",
+      "variant": "dashed"
+    }
+  ]
+}

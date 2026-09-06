@@ -3,3 +3,12 @@
 ppt-master/
 .venv/
 projects/
+flowchart/*.html
+flowchart/*.png
+flowchart/deliver_*.json
+flowchart/flowchart_classic.json
+flowchart/flowchart_signal-flow.json
+flowchart/flowchart_blueprint.json
+flowchart/flowchart_editorial.json
+nerdy绿_小红书图片/
+flowchart/flowchart_classic.visual-check.json

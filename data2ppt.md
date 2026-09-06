@@ -1,5 +1,8 @@
 # data2ppt — 表格数据 → nerdy 绿叙事 PPT 使用约定
 
+> 本文件已被封装为可调用技能：`~/.agents/skills/data2ppt/SKILL.md`。
+> 对 AI 助手说"做 PPT / 生成决策摘要"即可触发；本文件是规则的完整版。
+
 把表格数据交给本项目的 AI 助手并说"生成 PPT"，即按本约定走 ppt-master 的
 Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt-master 本体保持原样。
 
@@ -54,6 +57,15 @@ Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt
 - 归因 ≤3 个原因；饼图 >3 分类禁用；无网格线/图例/双轴/3D
 - 颜色只用绿色系标记关注点（深绿=结构/合计，中绿 #55816D=下降/异常，浅绿 #A9C3B6=正向），全篇无红色
 - 图表/表格必须原生可编辑（--native-charts-and-tables），禁止截图嵌页
+
+## 已踩过的坑（实跑沉淀）
+
+- `init` 目录名必须带格式段（--format ppt169），否则 scaffold/validate 拒绝。
+- bar 图表 `point_colors` 不接受 null；百分比标签 = 小数值 + `number_format: "0.0%"`。
+- 图表可见 fallback 修改后必须重打 `stamp_native_fallbacks --write`。
+- 流程图泳道标签与首节点保留 ≥10px 垂直间隙（质量门查不出组内遮挡）。
+- 导出每次生成新时间戳文件——交付路径从 `[Done] Saved:` 输出现取。
+- 交付前渲染目检强制：文本遮挡、边线穿字、图例完整。
 
 ## 失败恢复
 
