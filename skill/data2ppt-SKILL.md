@@ -24,8 +24,9 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
 
 1. 本文件。
 2. 读 `<项目根目录>/data2ppt.md`（交互流程与质量红线的完整版）。
-3. 读 `${STYLE_WS}/templates/design_spec.md`（视觉 tokens = §V，流程图样式 = §VIII）。
-4. 生成流程图页前，另读 ppt-master 的 `references/native-shape-authoring.md` 与
+3. 读 `<项目根目录>/methodology/analysis-methodology.md`（分析方法论规则库 §A–§H）。
+4. 读 `${STYLE_WS}/templates/design_spec.md`（视觉 tokens = §V，流程图样式 = §VIII）。
+5. 生成流程图页前，另读 ppt-master 的 `references/native-shape-authoring.md` 与
    `references/executor-chart.md`；纯图表页读 `references/native-data-interface.md`。
 
 ## 工作流（两个阻塞确认点，其余自动）

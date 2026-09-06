@@ -36,6 +36,8 @@ keywords: [data, storytelling, dashboard, card, green, analysis, decision]
 | 归因 | Rank what caused it, honestly | ≤3 causes ranked by contribution (pp or %); each with mechanism one-liner; state unknowns | Waterfall or horizontal bar card; contributions labeled on marks |
 | 行动 | Convert analysis into decisions | Each action tied to an attribution line; expected effect quantified when data allows | Numbered action cards; each action ≤1 line, owner/deadline slots |
 | 附录 | Give auditors the full picture | Full cleaned table(s) behind the deck's claims | Dense native table card, quiet styling, clearly secondary |
+| 数据核查 | 证明"变化是真的"再开始叙事：链路核查、稳定性（CV 阈值）、异常值处理 | facts.json `quality_check` 字段；CV 数值与阈值对照；剔除的异常值披露 | 单张窄卡放在冲突页前或并入口径卡；不稳定信号用 #55816D |
+| 假设验证 | 列出归因假设清单及每条的验证方法与结论，支撑"≤3 个原因"的证据链 | 每个假设一行：假设 → 验证方法 → 支持/排除；排除项也要展示 | 表格式卡片；支持项深绿标记，排除项灰显 |
 
 ## IV. Evidence & Data Expression
 
