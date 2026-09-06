@@ -42,3 +42,16 @@ verify-charts: 04_attribution_waterfall.svg | object=gmv-attribution | type=wate
 
 - qlmanage 渲染为预览用途；最终视觉以 PowerPoint 打开导出 PPTX 为准（图表颜色/字体在 PowerPoint 中的呈现建议用户回来后人工复核一次）。
 - `visual_style: custom` 未挂接 ppt-master 目录引用文件，风格语义完全由风格工作区 design_spec.md 承载——符合设计（显式 workspace root 路线）。
+
+---
+
+## Revision Round 2（用户反馈：2026-09-06）
+
+用户三条反馈及处置：
+
+1. **封面白卡与背景突兀** → 回看参考图（img_02 等）确认：nerdy 模板的画布是**近白色**，卡片用细描边+浅灰内嵌面板做"轻边界"，不是白卡浮在灰底上。处置：画布 #EFEFED → 近白 #F7F7F4；封面改为**全宽标题卡**（参考模板页眉卡做法）+ 底部"本篇结构"四段导览条（浅灰 #F2F2EF 内嵌面板）；风格 spec §V 同步改写（卡片去阴影、新增 inset panel token、全宽构图优先规则）。
+2. **红色替换为绿色** → 全篇去红，绿色单色系：深绿 #1F4D3F（结构/合计）、中绿 #55816D（下降/异常标记）、浅绿 #A9C3B6（正向）、方向由明度+正负号承载。5 页 SVG、原生图表 payload（chart201 point_colors/data_labels、chartEx colors401 color-style part）全部换色；终检 0 错误。
+3. **融入 openai/role-specific-plugins 的 product-business-analysis 方法** → data2ppt.md 与风格 spec §II 新增：决策框架先行（决策/受众/行动/对比口径）、来源发现与冲突裁决、假设→聚焦数据问题、facts.json 增加基线/分母、大纲页标注决策透镜、行动页四要素（做什么/证据/风险/后续验证）、暂定结论显式标注。
+
+Revision 后产物：`exports/gmv_acceptance_20260906_084101_native_charts_tables.pptx`
+（`[POSTFLIGHT] status=passed quality_gate=passed slides=5 warning_categories=0`；终检 5 页 0 错误 0 警告；图表几何未变，颜色系更新已验证进入原生 chart part。）
