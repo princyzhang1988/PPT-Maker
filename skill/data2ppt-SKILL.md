@@ -106,4 +106,5 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
 ## 沉淀
 
 每次实际使用后，若发现新的坑或风格修正：更新 data2ppt.md / 风格工作区
-design_spec.md（含本文件），git commit（仓库 <项目根目录>）。
+design_spec.md（含本文件），git commit 并 push 到 GitHub
+（origin = github.com/princyzhang1988/PPT-Maker，保持仓库与本地同步）。

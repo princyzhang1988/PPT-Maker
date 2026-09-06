@@ -72,3 +72,11 @@ Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt
 - 单页失败：按 ppt-master failure-recovery 修该页所属层，不重跑规划
 - 上下文丢失：`继续生成 projects/<project_name>` 走 resume-execute
 - 风格/质量争议：对照 templates/nerdy-green-storytelling/templates/design_spec.md
+
+## 沉淀与同步
+
+- 每次实际使用后，若发现新的坑或风格修正：更新本文件 / 风格工作区 design_spec.md /
+  SKILL.md，git commit 并 push 到 GitHub（origin = github.com/princyzhang1988/PPT-Maker，
+  保持仓库与本地同步）。
+- 推送前过一遍隐私检查：真实业务数据不得入库（projects/ 已 ignore；流程图拓扑等
+  新增引用文件先脱敏再提交）。
