@@ -34,6 +34,8 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
 **Phase A — 理解与方向**（⛔ 阻塞点 1）
 1. 接收输入：Excel/CSV 用 pandas 读；对话内表格解析成结构化数据；先做数据核查
    （行列合计、口径一致性），冲突如实记录，不抹平。
+   数值探查优先用脚本实跑：`.venv/bin/python analyze.py <数据> --metric <列> --time <列>
+   [--dims <维度>] [--compare <期1>,<期2>]`，输出 facts 草稿后 AI 复核补全（规则 §A/§B/§H）。
 2. 确认决策框架：这次分析服务什么决策、给谁看、要什么行动、对比口径是什么；
    再问用户有没有已想好的论点/论据方向。
    - 有方向 → MECE 金字塔拆解，定向探查支持与反驳证据；
@@ -66,7 +68,6 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
    ```
    页面有任何可见修改后必须重打。
 7. 质量门（页数 ≤6 免早检门，直接终检）：
-   （分析探查用 `.venv/bin/python analyze.py --help` 查看参数；规则见 methodology §A/§B/§H）
    ```bash
    $PYTHON $SKILL_DIR/scripts/svg_quality_checker.py <project> --canonical-authoring --stage final --json
    ```
