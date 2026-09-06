@@ -24,12 +24,17 @@ Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt
    （每页：编号、角色、一句话标题、图表类型与数据来源），等用户确认。
    每页标题必须 ≤30 字结论句；写不出这句话的页/图砍掉。
 5. **自动执行到交付，中途不再提问**：
-   - `project_manager.py init <name>`（16:9 用 `1280×720` viewBox，spec_lock 记录）
+   - `project_manager.py init <name> --format ppt169`（16:9=1280×720，目录名必须带格式段，否则 scaffold/validate 拒绝）
    - `project_manager.py import-sources <project> <数据文件> facts.json`
    - Stage 1 按"明确委托"代决策：传入风格工作区 root
      （`explicit_workspace_roots=[<风格工作区>]`），沟通契约 = reader-led 决策摘要
    - Executor 逐页生成 SVG（P01–P05 早检门 → 连续生成 → 终检门 0 错误）
-   - 含数据图表 → 强制 `verify-charts` 对照 facts.json
+     - 值驱动图表：图内画 `chart-plot-area: object=<key> | x_min,y_min,x_max,y_max` 标记；
+       原生图表对象（`data-pptx-replace-with="chart"` + 内联 JSON）与可见 fallback
+       同一编辑单元写完，随即 `stamp_native_fallbacks.py <svg_output> --write` 打同步戳；
+       页面有任何可见修改后重打
+   - 含数据图表 → 强制 `verify-charts`（svg_position_calculator 对照 plot-area；
+     瀑布图按分解段落逐段核算）→ 修完重跑终检
    - `svg_to_pptx.py <project> --native-charts-and-tables`
    - 交付 `exports/*.pptx`，报告 POSTFLIGHT 结果与 warnings
 
