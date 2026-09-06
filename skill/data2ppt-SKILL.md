@@ -66,6 +66,7 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
    ```
    页面有任何可见修改后必须重打。
 7. 质量门（页数 ≤6 免早检门，直接终检）：
+   （分析探查用 `.venv/bin/python analyze.py --help` 查看参数；规则见 methodology §A/§B/§H）
    ```bash
    $PYTHON $SKILL_DIR/scripts/svg_quality_checker.py <project> --canonical-authoring --stage final --json
    ```
