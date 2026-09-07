@@ -28,10 +28,17 @@ Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt
    §A/§B/§H 的数值探查**优先用脚本实跑**（结果可复现、杜绝手算误差）：
    ```bash
    .venv/bin/python analyze.py <data.csv> --metric <指标列> --time <时间列> \
-       [--dims <维度列,...>] [--compare <期1>,<期2>] [--out <project>/sources/facts_draft.json]
+       [--dims <维度列,...>] [--compare <期1>,<期2>] \
+       [--funnel <阶段列1>,<阶段列2>,...] [--out <project>/sources/facts_draft.json]
    ```
-   输出为 facts 草稿（quality_check/三比/趋势/贡献度），AI 复核后补充业务口径、
-   caveats、决策框架，再写入 facts.json。
+   输出为 facts 草稿（data_cleaning/quality_check/三比/趋势/贡献度/漏斗/画像），
+   AI 复核后补充业务口径、caveats、决策框架，再写入 facts.json。
+   - §H.0 清洗自动执行：`--metric` 列带单位后缀（如 `gmv_wan`）自动归一化到绝对量
+     基准，趋势/贡献度/排名/画像全链路同口径；缺失率、脏值、重复行、同指标多单位
+     冲突（如 `gmv_wan` 与 `gmv_yi` 并存）在 `data_cleaning` 中显式披露，冲突必须先
+     统一口径再聚合。
+   - §H 漏斗：`--funnel 触达,加微,首购,复购` 出各阶段值/转化率/流失率/最大流失边；
+     相邻阶段量纲不一致时脚本拒绝计算转化率（如人数→金额），先统一口径再算。
 3. **问方向（唯一前置提问）**：先确认决策框架——这次分析服务于什么决策、
    谁来用、要什么行动、对比口径是什么；再问有没有已想好的论点/论据方向。
    - 有 → 按论点做 MECE 金字塔拆解，定向探查支持与反驳证据；
@@ -94,6 +101,10 @@ Generate PPTX 路线。本文件是流程收窄说明书，不是新代码；ppt
 - `init` 目录名必须带格式段（--format ppt169），否则 scaffold/validate 拒绝。
 - bar 图表 `point_colors` 不接受 null；百分比标签 = 小数值 + `number_format: "0.0%"`。
 - 图表可见 fallback 修改后必须重打 `stamp_native_fallbacks --write`。
+- 数值列单位嵌在列名里（`gmv_wan`/`delta_wan`）是常态——analyze.py 会自动识别并归一化，
+  但 **facts.json 里必须保留原始单位标注**，deck 口径注随原始单位呈现，不得混用。
+- 漏斗阶段必须同量纲（人数对人数、金额对金额）；脚本对量纲不一致的相邻阶段拒绝
+  计算转化率，deck 遇到这种 note 时先统一口径再上漏斗图。
 - 流程图泳道标签与首节点保留 ≥10px 垂直间隙（质量门查不出组内遮挡）。
 - 导出每次生成新时间戳文件——交付路径从 `[Done] Saved:` 输出现取。
 - 交付前渲染目检强制：文本遮挡、边线穿字、图例完整。
