@@ -21,7 +21,10 @@ def run_analyze(*args):
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise AssertionError(f"exit={r.returncode} stderr={r.stderr[-400:]}")
-    return json.loads(r.stdout)
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(f"stdout 非 JSON: {r.stdout[-400:]}")
 
 
 def check(name, fn):
@@ -40,7 +43,7 @@ def test_sigtest_means():
     d = run_analyze(str(ROOT / "examples/sigtest_two_groups.csv"),
                     "--sigtest", "value,group")
     s = d["sigtest"]
-    assert "welch_t" in s["tests"] and "mann_whitney_u" in s["tests"]
+    assert "welch_t" in s["tests"] and "mann_whitney_u" in s["tests"], f"keys={list(s['tests'])}"
     assert s["tests"]["welch_t"]["p"] < 0.05, f"p={s['tests']['welch_t']['p']}"
     assert s["effect_cohens_d"] is not None
     lo, hi = s["tests"]["welch_t"]["ci95_diff"]
@@ -52,13 +55,15 @@ def test_sigtest_means():
 def test_sigtest_n30_guard():
     # 前 20 行（每组 10 行 < 30）→ 不输出 p 值，只报效应量方向
     src = (ROOT / "examples/sigtest_two_groups.csv").read_text().strip().splitlines()
-    small = "\n".join([src[0]] + src[1:11] + src[33:43])  # A 组 10 行 + B 组 10 行
+    a_rows = [l for l in src[1:] if l.startswith("A,")][:10]
+    b_rows = [l for l in src[1:] if l.startswith("B,")][:10]
+    small = "\n".join([src[0]] + a_rows + b_rows)
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
         f.write(small)
         path = f.name
     d = run_analyze(path, "--sigtest", "value,group")
     s = d["sigtest"]
-    assert "tests" not in s and "sample_guard" in s
+    assert "tests" not in s and "sample_guard" in s, f"keys={list(s)}"
     assert "effect_direction" in s and "暂定" in s["conclusion"]
 
 
