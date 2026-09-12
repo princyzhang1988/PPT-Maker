@@ -1,0 +1,17 @@
+week,group,value
+W1,control,101.6
+W2,control,99.9
+W3,control,104.5
+W4,control,105.9
+W5,control,101.1
+W6,control,103.4
+W7,control,107.3
+W8,control,107.4
+W1,treatment,101.0
+W2,treatment,100.3
+W3,treatment,104.8
+W4,treatment,105.6
+W5,treatment,113.1
+W6,treatment,116.3
+W7,treatment,115.9
+W8,treatment,114.3
