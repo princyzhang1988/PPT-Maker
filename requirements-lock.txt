@@ -84,3 +84,5 @@ websockets==16.1.1
 Werkzeug==3.1.8
 xlsxwriter==3.2.9
 yarl==1.24.5
+scipy==1.18.1
+statsmodels==0.15.0
