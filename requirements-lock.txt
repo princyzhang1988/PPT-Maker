@@ -86,3 +86,8 @@ xlsxwriter==3.2.9
 yarl==1.24.5
 scipy==1.18.1
 statsmodels==0.15.0
+formulaic==1.2.2
+interface_meta==2.0.1
+narwhals==2.26.0
+patsy==1.0.3
+wrapt==2.4.1
