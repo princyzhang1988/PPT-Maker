@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""analyze.py — data2ppt 自动探查脚本（方法论规则库 §A/§B/§H 的可执行版）
+"""analyze.py — data2ppt 自动探查脚本（方法论规则库 §A/§B/§H/§I 的可执行版）
 
 输入一份 CSV/XLSX 和可选参数，产出 facts.json 草稿：
 - §H.0 数据清洗（探查前必跑）：单位识别与归一化（列名后缀 _wan/_yi/万/亿 等）、
@@ -10,12 +10,18 @@
 - §A 数据可信前置检查：CV 稳定性阈值、3σ/IQR 异常值（link_check 留人工）
 - 趋势：时间序列的最新变化幅度、最大涨跌
 - §B 三比：自己比（同比/环比/定基）实算；标杆比/市场比标注不可得原因
+- §I 六法实跑（「分析方式提案」确认点的可执行项）：
+  - 象限：--quadrant X,Y 配合 --dims，两指标切四象限（中位数分界，|r|>0.8 退化告警）
+  - 留存：--retention 用户,日期[,分组]，按首次活跃日分 cohort，算次日/7日/30日留存
+  - RFM：--rfm 用户,日期,金额，R/F/M 中位数切分八群，输出各群人数与营收占比
 
 用法：
   .venv/bin/python analyze.py <data.csv> [--metric 指标列] [--time 时间列] \
       [--dims 维度列1,维度列2] [--compare 期1,期2] [--funnel 阶段列1,阶段列2,...] \
-      [--out facts_draft.json]
+      [--quadrant X列,Y列] [--cuts X界,Y界] [--rfm 用户列,日期列,金额列] \
+      [--retention 用户列,日期列[,分组列]] [--out facts_draft.json]
 
+只跑 --rfm / --retention 时可以不提供 --metric（跳过指标级清洗与 §A 检查）。
 输出 JSON 到 --out（默认打印 stdout）。**草稿仅供 AI 复核补充，不直接作为
 facts.json 使用**——业务口径、caveats、决策框架仍由分析者补全。
 数值列带单位后缀（如 gmv_wan）时，脚本自动归一化到绝对量基准后再计算，
@@ -333,6 +339,201 @@ def profile_block(df: pd.DataFrame, dims: list, metric_col: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# §I 象限分析（保谁弃谁：两指标四象限）
+# ---------------------------------------------------------------------------
+
+
+def quadrant_block(df: pd.DataFrame, x_col: str, y_col: str, dims: list, cuts) -> dict:
+    """象限分析：每个分析对象（--dims 聚合求和）取两指标切四象限。
+
+    分界线默认取各自中位数——仅作起点，最终切线须结合业务阈值校准；
+    两轴 |r|>0.8 视为四象限退化，告警换轴（§I-4）。
+    """
+    d = df.copy()
+    for c in (x_col, y_col):
+        if c not in d.columns:
+            return {"error": f"象限分析列不存在：{c}"}
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    g = d.dropna(subset=[x_col, y_col]).groupby(dims)[[x_col, y_col]].sum()
+    if len(g) < 4:
+        return {"error": f"象限分析需要 ≥4 个分析对象（{dims} 现有 {len(g)} 个）"}
+    xs, ys = g[x_col].astype(float), g[y_col].astype(float)
+    corr = float(xs.corr(ys)) if xs.std() > 0 and ys.std() > 0 else None
+    degenerate = corr is not None and abs(corr) > 0.8
+    cut_x = cuts[0] if cuts and cuts[0] is not None else float(xs.median())
+    cut_y = cuts[1] if cuts and cuts[1] is not None else float(ys.median())
+
+    def quadrant_name(x: float, y: float) -> str:
+        if x >= cut_x and y >= cut_y:
+            return "高X高Y（放大）"
+        if x < cut_x and y >= cut_y:
+            return "低X高Y（维持/保收）"
+        if x >= cut_x and y < cut_y:
+            return "高X低Y（核查/观察）"
+        return "低X低Y（收缩/退出）"
+
+    total_y = float(ys.sum())
+    rows = []
+    for key, row in g.iterrows():
+        k = key if isinstance(key, tuple) else (key,)
+        x_val, y_val = float(row[x_col]), float(row[y_col])
+        rows.append({
+            "dims": dict(zip(dims, [str(v) for v in k])),
+            "x": round(x_val, 4), "y": round(y_val, 4),
+            "quadrant": quadrant_name(x_val, y_val),
+            "y_share_pct": round(y_val / total_y * 100, 1) if total_y else None,
+        })
+    rows.sort(key=lambda r: (r["quadrant"], -(r["y"] or 0)))
+    return {
+        "x_metric": x_col, "y_metric": y_col,
+        "cut_lines": {"x": round(cut_x, 4), "y": round(cut_y, 4),
+                      "note": "默认中位数，仅作起点——最终切线须业务校准并写入口径注"},
+        "corr_xy": None if corr is None else round(corr, 3),
+        "degenerate_warning": "两轴强相关（|r|>0.8），四象限退化成一条线——换轴或弃用（§I-4）"
+                              if degenerate else None,
+        "by_object": rows,
+        "note": "聚合方式为求和；比率类指标（增速/毛利率）请先按对象预算好再进象限；"
+                "静态象限需跟踪跨期位置变化",
+    }
+
+
+# ---------------------------------------------------------------------------
+# §I 留存分析（拉来的人留得住吗：cohort × 精确第 N 日回访）
+# ---------------------------------------------------------------------------
+
+
+def retention_block(df: pd.DataFrame, user_col: str, date_col: str, segment_col=None) -> dict:
+    """留存分析：用户级活跃明细，按首次活跃日分 cohort，算 D1/D7/D30 精确回访留存。
+
+    口径 = 精确第 N 日（日历日偏移）有活跃，非"N 日内仍活跃"滚动口径；
+    未成熟 cohort（观察期不足 N 天）不计入并单独标注（§I-5）。
+    """
+    cols = [user_col, date_col] + ([segment_col] if segment_col else [])
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        return {"error": f"留存分析列不存在：{missing}"}
+    d = df[cols].copy()
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    d = d.dropna(subset=[user_col, date_col])
+    if d.empty:
+        return {"error": "留存分析：用户/日期列无可解析数据"}
+    d["day"] = d[date_col].dt.normalize()
+    snapshot = d["day"].max()
+    first = d.groupby(user_col)["day"].min().rename("cohort_day")
+    d = d.join(first, on=user_col)
+    d["offset_days"] = (d["day"] - d["cohort_day"]).dt.days
+
+    def cohort_table(sub: pd.DataFrame) -> dict:
+        users = sub[user_col].nunique()
+        out = {"cohort_users": users}
+        for n_day in (1, 7, 30):
+            key = f"d{n_day}_retention_pct"
+            matured = sub[sub["cohort_day"] <= snapshot - pd.Timedelta(days=n_day)]
+            m_users = matured[user_col].nunique()
+            if m_users == 0:
+                out[key] = None
+                out[f"{key}_note"] = "观察期不足，cohort 未成熟，不计入"
+            else:
+                retained = matured[matured["offset_days"] == n_day][user_col].nunique()
+                out[key] = round(retained / m_users * 100, 1)
+        return out
+
+    result = {
+        "snapshot_date": str(snapshot.date()),
+        "definition": "Dn = 首次活跃后第 N 个日历日（精确命中）仍有活跃的用户占比；"
+                      "未成熟 cohort 不计入",
+        "overall": cohort_table(d),
+    }
+    if segment_col:
+        by_segment = {}
+        for seg, sub in d.dropna(subset=[segment_col]).groupby(segment_col):
+            by_segment[str(seg)] = cohort_table(sub)
+        result["by_segment"] = by_segment
+    result["notes"] = [
+        "必须按渠道/人群拆分看留存，整体均值会掩盖渠道质量差异（§I-5）",
+        "警惕幸存者偏差：少数高频用户撑高整体曲线，不等于普遍粘性",
+        "多 cohort 合并统计（按首活跃日过滤未成熟用户）；新增留存≠活跃留存，口径注须声明",
+    ]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# §I RFM 分析（谁是高价值客户：R/F/M 中位数切分八群）
+# ---------------------------------------------------------------------------
+
+# 8 种 R/F/M 组合的默认分群名与建议动作（动作仅为起点，须业务确认并配责任人）
+RFM_LABELS = {
+    (1, 1, 1): "重要价值（维持：一对一维护+专属权益）",
+    (0, 1, 1): "重要唤回（R 阈值期内定向触达召回）",
+    (1, 0, 1): "重要深耕（提频：复购/搭配推荐）",
+    (1, 1, 0): "潜力客户（提客单：组合/满额）",
+    (1, 0, 0): "新客（首购转化与激活）",
+    (0, 0, 1): "重要挽留（高价值趋流失，优先人工介入）",
+    (0, 1, 0): "一般保持（低频平价，低成本触达）",
+    (0, 0, 0): "流失风险（低成本召回或放弃）",
+}
+
+
+def rfm_block(df: pd.DataFrame, user_col: str, date_col: str, amount_col: str) -> dict:
+    """RFM：用户级订单 → 最近购买 R（天）/频次 F/金额 M，中位数切分八群。
+
+    阈值来自自家数据中位数（不得照抄行业经验线）；每群动作仅为默认建议，
+    须配责任人与业务确认（§I-6）。
+    """
+    missing = [c for c in (user_col, date_col, amount_col) if c not in df.columns]
+    if missing:
+        return {"error": f"RFM 列不存在：{missing}"}
+    d = df[[user_col, date_col, amount_col]].copy()
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    d[amount_col] = pd.to_numeric(d[amount_col], errors="coerce")
+    d = d.dropna()
+    if d.empty:
+        return {"error": "RFM：用户/日期/金额列无可解析数据"}
+    _, _, amount_unit = unit_of(amount_col)
+    snapshot = d[date_col].max()
+    g = d.groupby(user_col).agg(
+        last_date=(date_col, "max"), F=(date_col, "count"), M=(amount_col, "sum")
+    )
+    g["R_days"] = (snapshot - g["last_date"]).dt.days
+    r_cut, f_cut, m_cut = float(g["R_days"].median()), float(g["F"].median()), float(g["M"].median())
+
+    g["segment"] = [
+        RFM_LABELS[(int(r <= r_cut), int(f >= f_cut), int(m >= m_cut))]
+        for r, f, m in zip(g["R_days"], g["F"], g["M"])
+    ]
+    total_m = float(g["M"].sum())
+    rows = []
+    for seg, sub in g.groupby("segment"):
+        rows.append({
+            "segment": seg,
+            "users": int(len(sub)),
+            "user_share_pct": round(len(sub) / len(g) * 100, 1),
+            "revenue_share_pct": round(float(sub["M"].sum()) / total_m * 100, 1) if total_m else None,
+            "median_r_days": float(sub["R_days"].median()),
+            "median_f": float(sub["F"].median()),
+            "median_m": float(sub["M"].median()),
+        })
+    rows.sort(key=lambda r: -(r["revenue_share_pct"] or 0))
+    out = {
+        "snapshot_date": str(snapshot.date()),
+        "amount_unit": amount_unit,
+        "thresholds": {
+            "r_good_days_le": round(r_cut, 1), "f_good_orders_ge": round(f_cut, 1),
+            "m_good_amount_ge": round(m_cut, 2),
+            "note": "阈值=自家数据中位数，不得照抄行业经验线（§I-6）",
+        },
+        "segments": rows,
+        "notes": [
+            "每群动作仅为默认建议，须配责任人与业务确认，方向标签联动 §G 三分类",
+            "权重调整（加权 RFM）须经回归/AB 验证后才可使用",
+        ],
+    }
+    if len(g) < 30:
+        out["notes"].append(f"用户数 {len(g)} < 30，分群结论标'暂定'（样本量规则 §A.4）")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -346,6 +547,10 @@ def main() -> None:
     ap.add_argument("--dims", help="维度列名，逗号分隔（用于画像/贡献度分解/分类排名）")
     ap.add_argument("--compare", help="贡献度分解指定两期，逗号分隔，如 W25,W26")
     ap.add_argument("--funnel", help="漏斗阶段列名，逗号分隔（按顺序为链路），如 触达,加微,首购,复购")
+    ap.add_argument("--quadrant", help="§I 象限分析两指标列，逗号分隔：X列,Y列（配合 --dims 指定分析对象）")
+    ap.add_argument("--cuts", help="象限分界线 X,Y（默认取各自中位数）")
+    ap.add_argument("--rfm", help="§I RFM 用户级订单列，逗号分隔：用户列,日期列,金额列")
+    ap.add_argument("--retention", help="§I 留存用户级明细列，逗号分隔：用户列,日期列[,分组列]")
     ap.add_argument("--out", help="输出 JSON 路径（默认打印 stdout）")
     args = ap.parse_args()
 
@@ -360,41 +565,48 @@ def main() -> None:
         metric = num_cols[0] if num_cols else None
         if metric:
             draft["open_questions"] = [f"未指定 --metric，默认取第一个数值列 '{metric}'，请确认"]
-    if metric is None or metric not in df.columns:
+    # 只跑 RFM/留存时不需要指标列，跳过指标级清洗与 §A 检查
+    standalone = args.rfm or args.retention
+    if (metric is None or metric not in df.columns) and not standalone:
         print(json.dumps({"error": f"找不到数值型指标列（{args.metric}）；用 --metric 指定"}, ensure_ascii=False))
         sys.exit(1)
+    have_metric = metric is not None and metric in df.columns
 
     # §H.0 数据清洗（探查前必跑）：单位归一化 + 缺失/脏值/重复/单位冲突
-    clean = clean_block(df, metric)
-    s = clean.pop("_series")  # 归一化后的指标序列，后续计算统一用它
-    draft["data_cleaning"] = clean
-    # 内部计算统一用归一化值（趋势/贡献度/排名/画像同口径），避免单位污染
-    df_int = df.copy()
-    df_int[metric] = s
+    df_int = df
+    if have_metric:
+        clean = clean_block(df, metric)
+        s = clean.pop("_series")  # 归一化后的指标序列，后续计算统一用它
+        draft["data_cleaning"] = clean
+        # 内部计算统一用归一化值（趋势/贡献度/排名/画像同口径），避免单位污染
+        df_int = df.copy()
+        df_int[metric] = s
 
-    # §A 数据可信前置检查（用归一化后的值）
-    cv = s.std() / s.mean() * 100 if s.mean() else None
-    draft["quality_check"] = {
-        "stability": stability_label(cv) if cv is not None else "样本不足",
-        "cv_pct": round(cv, 2) if cv is not None else None,
-        "outliers": outlier_check(s),
-        "link_check": "待人工核查：采集/ETL/上报链路是否变更，多数据源是否可交叉验证（脚本无法替代）",
-    }
+        # §A 数据可信前置检查（用归一化后的值）
+        cv = s.std() / s.mean() * 100 if s.mean() else None
+        draft["quality_check"] = {
+            "stability": stability_label(cv) if cv is not None else "样本不足",
+            "cv_pct": round(cv, 2) if cv is not None else None,
+            "outliers": outlier_check(s),
+            "link_check": "待人工核查：采集/ETL/上报链路是否变更，多数据源是否可交叉验证（脚本无法替代）",
+        }
 
-    # §B 三比框架：自己比实算，其余标注不可得原因
-    draft["sanbi"] = {
-        "self": trend_block(df_int, time_col, metric) if time_col else
-                {"note": "无时间列，自己比需提供期间列（--time）"},
-        "benchmark": "不可得（未提供业务目标/盈亏平衡点/历史最优数据）——如有目标值请补充",
-        "market": "不可得（未提供竞品/行业数据）",
-    }
+        # §B 三比框架：自己比实算，其余标注不可得原因
+        draft["sanbi"] = {
+            "self": trend_block(df_int, time_col, metric) if time_col else
+                    {"note": "无时间列，自己比需提供期间列（--time）"},
+            "benchmark": "不可得（未提供业务目标/盈亏平衡点/历史最优数据）——如有目标值请补充",
+            "market": "不可得（未提供竞品/行业数据）",
+        }
+    else:
+        draft["quality_check"] = {"note": "RFM/留存独立模式：未提供 --metric，跳过指标级清洗与 §A 检查"}
 
     # §H 三步探查：结构 → 漏斗 → 画像
     dims = args.dims.split(",") if args.dims else None
     compare = [c.strip() for c in args.compare.split(",")] if args.compare else None
 
     # §H 结构
-    if dims:
+    if dims and have_metric:
         draft["contribution"] = contribution_block(df_int, dims, time_col, metric, compare) \
             if time_col else {"error": "贡献度分解需要时间列"}
         if "error" in draft.get("contribution", {}):
@@ -406,8 +618,41 @@ def main() -> None:
         draft["funnel"] = funnel_block(df_int, stages)
 
     # §H 画像（有维度即出画像，与结构互补：结构看排名，画像看构成/集中度）
-    if dims:
+    if dims and have_metric:
         draft["profile"] = profile_block(df_int, dims, metric)
+
+    # §I 象限（分析对象由 --dims 指定，两指标切四象限）
+    if args.quadrant:
+        if not dims:
+            draft["quadrant"] = {"error": "象限分析需要 --dims 指定分析对象（产品/渠道/门店等）"}
+        else:
+            parts = [c.strip() for c in args.quadrant.split(",")]
+            if len(parts) != 2:
+                draft["quadrant"] = {"error": "--quadrant 需要恰好两列：X,Y"}
+            else:
+                cuts = None
+                if args.cuts:
+                    raw = [None if v.strip().lower() in ("", "none") else float(v)
+                           for v in args.cuts.split(",")]
+                    cuts = (raw + [None, None])[:2]
+                draft["quadrant"] = quadrant_block(df_int, parts[0], parts[1], dims, cuts)
+
+    # §I RFM（用户级订单 → R/F/M 中位数切分八群）
+    if args.rfm:
+        parts = [c.strip() for c in args.rfm.split(",")]
+        if len(parts) != 3:
+            draft["rfm"] = {"error": "--rfm 需要恰好三列：用户列,日期列,金额列"}
+        else:
+            draft["rfm"] = rfm_block(df, parts[0], parts[1], parts[2])
+
+    # §I 留存（用户级活跃明细 → cohort D1/D7/D30）
+    if args.retention:
+        parts = [c.strip() for c in args.retention.split(",")]
+        if len(parts) not in (2, 3):
+            draft["retention"] = {"error": "--retention 需要两或三列：用户列,日期列[,分组列]"}
+        else:
+            draft["retention"] = retention_block(df, parts[0], parts[1],
+                                                 parts[2] if len(parts) == 3 else None)
 
     text = json.dumps(draft, ensure_ascii=False, indent=2, default=str)
     if args.out:
