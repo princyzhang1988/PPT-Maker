@@ -12,6 +12,7 @@
 | `templates/nerdy-green-storytelling/` | 风格工作区（设计 tokens、Storytelling 方法论、流程图样式规范） |
 | `skill/data2ppt-SKILL.md` | 可调用技能定义（复制到 `~/.agents/skills/data2ppt/SKILL.md` 使用） |
 | `analyze.py` | 自动探查脚本：CV 稳定性、3σ/IQR 异常值、两期贡献度分解、三比框架 → facts 草稿 |
+| `charts/` | 独立快速图表（matplotlib → 透明 PNG）：白名单只入库 `chart_style.py` 公共样式与 `example_dual_axis_line.py` 模板，真实数据脚本留在本地（见 charts/README.md） |
 | `examples/` | 端到端验收样例数据（GMV 虚构样例） |
 | `flowchart/flowchart_base.json` | 流程图拓扑源（archify workflow 格式，已脱敏） |
 | `docs/superpowers/` | 设计文档、实施计划、验收记录 |

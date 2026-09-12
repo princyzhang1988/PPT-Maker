@@ -175,6 +175,7 @@ def trend_block(df: pd.DataFrame, time_col: str, metric_col: str) -> dict:
         pos_max = int(np.asarray(deltas.values).argmax())
         out["max_drop_period"] = str(d[time_col].iloc[pos_min + 1])
         out["max_drop"] = round(float(deltas.values[pos_min]), 4)
+        out["max_rise_period"] = str(d[time_col].iloc[pos_max + 1])
         out["max_rise"] = round(float(deltas.values[pos_max]), 4)
     if len(vals) >= 3:
         first = vals[0]
