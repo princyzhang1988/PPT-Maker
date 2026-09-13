@@ -654,6 +654,9 @@ def test_causal_interrupt():
     c = d["causal"]
     assert "error" not in c, f"error={c.get('error')}"
     assert c["form"] == "中断前后对比"
+    assert c["pre"]["n"] == 7 and c["post"]["n"] == 9, f"n={c['pre']['n']}/{c['post']['n']}"
+    assert c["pre"]["range"][1] == "2026-08-31", f"pre range={c['pre']['range']}"
+    assert c["post"]["range"][0] == "2026-09-01", f"post range={c['post']['range']}"
     assert abs(c["diff"] - 8) <= 4, f"diff={c['diff']}"
     assert c["p"] < 0.05, f"p={c['p']}"
     assert any("同期趋势" in n for n in c["notes"])
@@ -701,9 +704,12 @@ Expected: 先红 `FAIL causal 中断对比: error=中断对比分支尚未实现
         d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
         d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
         d = d.dropna(subset=[value_col, time_col]).sort_values(time_col)
+        if d.empty:
+            return {"error": "时间列无法解析为日期（或无有效数值）"}
         cut = pd.to_datetime(interrupt)
-        pre = d[d[time_col] < cut][value_col]
-        post = d[d[time_col] >= cut][value_col]
+        pre_df = d[d[time_col] < cut]
+        post_df = d[d[time_col] >= cut]
+        pre, post = pre_df[value_col], post_df[value_col]
         if len(pre) < 3 or len(post) < 3:
             return {"error": f"中断对比要求干预前后各 ≥3 个点（当前 前 {len(pre)} / 后 {len(post)}）",
                     "downgrade": "干预点前后数据不足 → 探索性描述对比，结论标'暂定'（§I.0 规则 1）"}
@@ -711,10 +717,14 @@ Expected: 先红 `FAIL causal 中断对比: error=中断对比分支尚未实现
         lo, hi = cm.tconfint_diff(usevar="unequal")
         t_stat, p_val = stats.ttest_ind(post, pre, equal_var=False)
         return {"form": "中断前后对比", "interrupt": interrupt,
-                "pre": {"n": int(len(pre)), "mean": round(float(pre.mean()), 4)},
-                "post": {"n": int(len(post)), "mean": round(float(post.mean()), 4)},
+                "boundary_convention": "干预日当天计入 post（pre = 严格早于干预日）",
+                "pre": {"n": int(len(pre)), "mean": round(float(pre.mean()), 4),
+                        "range": [str(pre_df[time_col].min().date()), str(pre_df[time_col].max().date())]},
+                "post": {"n": int(len(post)), "mean": round(float(post.mean()), 4),
+                         "range": [str(post_df[time_col].min().date()), str(post_df[time_col].max().date())]},
                 "diff": round(float(post.mean() - pre.mean()), 4),
                 "ci95_diff": [round(float(lo), 4), round(float(hi), 4)],
+                "t_stat": round(float(t_stat), 4),
                 "p": round(float(p_val), 4),
                 "notes": ["前后对比未控制同期趋势——有对照组请改用 DiD（§I-8）",
                           "因果结论须业务确认",

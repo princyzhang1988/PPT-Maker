@@ -110,6 +110,9 @@ def test_causal_interrupt():
     c = d["causal"]
     assert "error" not in c, f"error={c.get('error')}"
     assert c["form"] == "中断前后对比"
+    assert c["pre"]["n"] == 7 and c["post"]["n"] == 9, f"n={c['pre']['n']}/{c['post']['n']}"
+    assert c["pre"]["range"][1] == "2026-08-31", f"pre range={c['pre']['range']}"
+    assert c["post"]["range"][0] == "2026-09-01", f"post range={c['post']['range']}"
     assert abs(c["diff"] - 8) <= 4, f"diff={c['diff']}"
     assert c["p"] < 0.05, f"p={c['p']}"
     assert any("同期趋势" in n for n in c["notes"])
