@@ -460,6 +460,8 @@ git add tests/test_inference.py analyze.py && git commit -m "test: 双比率 z �
 
 ### Task 6: --causal DiD（红灯 → 绿灯）
 
+> 修正（执行期）：--compare 语义=末个干预前期/首个干预后期；全面板回归避免饱和模型（spec 审查发现两期过滤致 CI=NaN）
+
 **Files:**
 - Modify: `tests/test_inference.py`、`analyze.py`
 
@@ -468,14 +470,15 @@ git add tests/test_inference.py analyze.py && git commit -m "test: 双比率 z �
 ```python
 def test_causal_did():
     d = run_analyze(str(ROOT / "examples/did_panel.csv"),
-                    "--causal", "value,week,group", "--compare", "W1,W8")
+                    "--causal", "value,week,group", "--compare", "W4,W5")
     c = d["causal"]
+    assert "error" not in c, f"error={c.get('error')}"
     assert c["form"] == "DiD 两重差分"
     est = c["did_estimate"]
     assert abs(est - 8) <= 3, f"DiD 估计未回收构造效应：{est}"
     lo, hi = c["ci95"]
     assert lo <= 8 <= hi, f"构造效应 8 不在 CI 内：[{lo},{hi}]"
-    assert c["p"] < 0.05
+    assert c["p"] < 0.05, f"p={c['p']}"
     assert "平行趋势" in c["parallel_trend_check"] or "未验证" in c["parallel_trend_check"]
     assert any("dowhy" in n for n in c["notes"])
 ```
@@ -494,52 +497,65 @@ Expected: `ERROR causal DiD: KeyError: 'causal'`（调用块还没加）
 # §I 准实验归因（变化是否由干预导致：DiD / 中断对比；DoWhy 仅作参照不引依赖）
 # ---------------------------------------------------------------------------
 
-DOWHY_NOTE = ("若能提供变量因果图（DAG），可安装 dowhy 做 GCM 异动归因——超出本脚本范围（§I-8）")
+DOWHY_NOTE = "若能提供变量因果图（DAG），可安装 dowhy 做 GCM 异动归因——超出本脚本范围（§I-8）"
 
 
 def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -> dict:
-    """--causal：3 参数=DiD（配 --compare）；2 参数=中断前后对比（配 --interrupt）。"""
+    """--causal：3 参数=DiD（配 --compare）；2 参数=中断前后对比（配 --interrupt）。
+
+    DiD 的 --compare 语义：期1=干预前最后一期，期2=干预后第一期；
+    全面板回归 post = 时间排序 ≥ 期2 的所有期（两期过滤会得到饱和模型，CI/p 无意义）。
+    """
+    downgrade = "无对照组且无干预点 → 路由降级为探索性归因（--dims 贡献度分解），结论标'暂定'（§I.0 规则 1）"
     if len(parts) == 3 and interrupt is None:
         value_col, time_col, group_col = parts
         missing = [c for c in (value_col, time_col, group_col) if c not in df.columns]
         if missing:
             return {"error": f"DiD 列不存在：{missing}"}
-        if not compare:
-            return {"error": "DiD 需要 --compare 期1,期2",
-                    "downgrade": "无两期面板数据 → 路由降级为探索性归因（--dims 贡献度分解），结论标'暂定'（§I.0 规则 1）"}
+        if not compare or len(compare) != 2:
+            return {"error": "DiD 需要 --compare 干预前最后一期,干预后第一期（如 W4,W5）",
+                    "downgrade": downgrade}
         d = df.copy()
         d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
         d = d.dropna(subset=[value_col])
         d[time_col] = d[time_col].astype(str)
-        d = d[d[time_col].isin(compare)]
         periods = sorted(d[time_col].unique())
-        if len(periods) != 2:
-            return {"error": f"--compare 需在数据中恰有两期：{compare}（现有 {periods}）"}
+        pre_anchor, post_anchor = compare[0], compare[1]
+        if pre_anchor not in periods or post_anchor not in periods:
+            return {"error": f"--compare 两期都必须存在于数据：{compare}（现有 {periods}）",
+                    "downgrade": downgrade}
+        if periods.index(pre_anchor) >= periods.index(post_anchor):
+            return {"error": f"--compare 期1 必须早于期2（语义：末个干预前期,首个干预后期）：{compare}"}
         levels = sorted(d[group_col].dropna().unique().tolist())
         if len(levels) != 2:
-            return {"error": "DiD 需要恰好两组（处理/对照）",
+            return {"error": f"DiD 需要恰好两组（处理/对照），现有 {len(levels)} 组",
                     "downgrade": "无对照组 → 路由降级为探索性归因（--dims 贡献度分解），结论标'暂定'（§I.0 规则 1）"}
         treat_on, control_on = levels[1], levels[0]
         dd = d.copy()
         dd["treat"] = (dd[group_col] == treat_on).astype(int)
-        dd["post"] = (dd[time_col] == periods[1]).astype(int)
+        dd["post"] = (dd[time_col].map(lambda t: periods.index(t) >= periods.index(post_anchor))).astype(int)
         dd["did"] = dd["treat"] * dd["post"]
         X = np.column_stack([np.ones(len(dd)), dd["treat"], dd["post"], dd["did"]])
         model = sm.OLS(dd[value_col].values, X).fit()
         ci = model.conf_int()[3]
-        # 平行趋势粗检：≥3 期时比较处理/对照在 pre 期的均值斜率差
-        parallel = "未验证（仅两期，无前期轨迹）——因果结论须业务确认"
-        if len(periods) >= 3:
-            piv = d[d[time_col] != periods[-1]].pivot_table(
-                index=time_col, columns=group_col, values=value_col, aggfunc="mean")
-            if piv.shape[1] == 2 and len(piv) >= 2:
+        # 平行趋势粗检：pre 侧 ≥2 期时，处理/对照各自按期均值做线性拟合，报斜率差
+        pre = dd[dd["post"] == 0]
+        pre_periods = sorted(pre[time_col].unique())
+        if len(pre_periods) >= 2:
+            piv = pre.pivot_table(index=time_col, columns=group_col, values=value_col,
+                                  aggfunc="mean").reindex(pre_periods)
+            if piv.shape[1] == 2 and not piv.isna().any().any():
                 slope_t = float(np.polyfit(range(len(piv)), piv[treat_on], 1)[0])
                 slope_c = float(np.polyfit(range(len(piv)), piv[control_on], 1)[0])
-                parallel = (f"前期趋势粗检：处理-对照斜率差 = {slope_t - slope_c:.3f}"
+                parallel = (f"平行趋势粗检（pre 侧 {len(pre_periods)} 期）：处理-对照斜率差 = {slope_t - slope_c:.3f}"
                             f"（接近 0 视为通过；粗检不替代严格检验）")
+            else:
+                parallel = "未验证（pre 侧面板不完整）——因果结论须业务确认"
+        else:
+            parallel = "未验证（pre 侧不足两期）——因果结论须业务确认"
         return {"form": "DiD 两重差分",
                 "treat_group": treat_on, "control_group": control_on,
-                "pre_period": periods[0], "post_period": periods[1],
+                "pre_periods": pre_periods, "post_periods": [t for t in periods if t not in pre_periods],
                 "did_estimate": round(float(model.params[3]), 4),
                 "ci95": [round(float(ci[0]), 4), round(float(ci[1]), 4)],
                 "p": round(float(model.pvalues[3]), 4),
@@ -549,35 +565,11 @@ def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -
                           DOWHY_NOTE]}
 
     if len(parts) == 2 and interrupt:
-        value_col, time_col = parts
-        missing = [c for c in (value_col, time_col) if c not in df.columns]
-        if missing:
-            return {"error": f"中断对比列不存在：{missing}"}
-        d = df.copy()
-        d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
-        d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
-        d = d.dropna(subset=[value_col, time_col]).sort_values(time_col)
-        cut = pd.to_datetime(interrupt)
-        pre = d[d[time_col] < cut][value_col]
-        post = d[d[time_col] >= cut][value_col]
-        if len(pre) < 3 or len(post) < 3:
-            return {"error": f"中断对比要求干预前后各 ≥3 个点（当前 前 {len(pre)} / 后 {len(post)}）",
-                    "downgrade": "干预点前后数据不足 → 探索性描述对比，结论标'暂定'（§I.0 规则 1）"}
-        cm = CompareMeans(DescrStatsW(post), DescrStatsW(pre))
-        lo, hi = cm.tconfint_diff(usevar="unequal")
-        t_stat, p_val = stats.ttest_ind(post, pre, equal_var=False)
-        return {"form": "中断前后对比", "interrupt": interrupt,
-                "pre": {"n": int(len(pre)), "mean": round(float(pre.mean()), 4)},
-                "post": {"n": int(len(post)), "mean": round(float(post.mean()), 4)},
-                "diff": round(float(post.mean() - pre.mean()), 4),
-                "ci95_diff": [round(float(lo), 4), round(float(hi), 4)],
-                "p": round(float(p_val), 4),
-                "notes": ["前后对比未控制同期趋势——有对照组请改用 DiD（§I-8）",
-                          "因果结论须业务确认",
-                          DOWHY_NOTE]}
+        # 中断对比：Task 7 实现本分支（此处先落降级错误占位）
+        return {"error": "中断对比尚未实现（Task 7）", "downgrade": downgrade}
 
     return {"error": "--causal 参数：指标列,时间列,分组列（DiD，配 --compare）或 指标列,时间列（中断对比，配 --interrupt）",
-            "downgrade": "无对照组且无干预点 → 路由降级为探索性归因（--dims 贡献度分解），结论标'暂定'（§I.0 规则 1）"}
+            "downgrade": downgrade}
 ```
 
 - [ ] **Step 4: 导入区追加 statsmodels API（Task 4 导入行之后）**
@@ -598,20 +590,23 @@ import statsmodels.api as sm
 - [ ] **Step 6: 跑测试转绿**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: 全部 PASS（DiD 估计回收 ≈8，CI 覆盖 8）
+Expected: 全部 PASS（全面板 DiD 估计 ≈10.15，CI 覆盖 8，p≈0.002；断言容差 |est-8|≤3 已覆盖）
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add analyze.py tests/test_inference.py && git commit -m "feat: analyze.py §I 准实验归因（DiD + 平行趋势粗检声明 + 中断对比 + 降级指引）"
+git add analyze.py tests/test_inference.py docs/superpowers/plans/2026-09-13-analysis-routing-and-inference.md
+git commit -m "feat: analyze.py §I 准实验 DiD（全面板回归，--compare=末pre/首post，平行趋势粗检+降级指引）"
 ```
 
 ---
 
 ### Task 7: --causal 中断对比（红灯 → 绿灯，/tmp 数据）
 
+> 修正（执行期）：Task 6 只落了中断对比分支的占位 error（`中断对比尚未实现（Task 7）`），本 Task 在 `causal_block` 真正实现该分支（真实红灯 → 绿灯）。
+
 **Files:**
-- Modify: `tests/test_inference.py`
+- Modify: `tests/test_inference.py`、`analyze.py`
 
 - [ ] **Step 1: 追加测试（/tmp 造 16 天日值，第 9 天起 +8）**
 
@@ -648,15 +643,16 @@ def test_causal_downgrade():
     check("causal 降级指引", test_causal_downgrade)
 ```
 
-- [ ] **Step 2: 运行**
+- [ ] **Step 2: 确认红灯 → 在 `causal_block` 落地中断对比分支 → 转绿**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: 全部 PASS（实现已在 Task 6 的 `causal_block` 中；若失败修复至绿）
+Expected: 先红（Task 6 占位 `error=中断对比尚未实现（Task 7）` → `KeyError: 'form'`）；
+在 `analyze.py` 的 `causal_block` 实现 2 参数 + `--interrupt` 分支后全部 PASS
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/test_inference.py && git commit -m "test: 中断对比与降级指引验收"
+git add analyze.py tests/test_inference.py && git commit -m "feat: analyze.py §I 中断对比分支 + 验收测试"
 ```
 
 ---

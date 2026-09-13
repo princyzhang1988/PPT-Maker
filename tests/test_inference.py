@@ -43,6 +43,7 @@ def test_sigtest_means():
     d = run_analyze(str(ROOT / "examples/sigtest_two_groups.csv"),
                     "--sigtest", "value,group")
     s = d["sigtest"]
+    assert "error" not in s, f"error={s.get('error')}"
     assert "welch_t" in s["tests"] and "mann_whitney_u" in s["tests"], f"keys={list(s['tests'])}"
     assert s["tests"]["welch_t"]["p"] < 0.05, f"p={s['tests']['welch_t']['p']}"
     assert s["effect_cohens_d"] is not None
@@ -63,6 +64,7 @@ def test_sigtest_n30_guard():
         path = f.name
     d = run_analyze(path, "--sigtest", "value,group")
     s = d["sigtest"]
+    assert "error" not in s, f"error={s.get('error')}"
     assert "tests" not in s and "sample_guard" in s, f"keys={list(s)}"
     assert "effect_direction" in s and "暂定" in s["conclusion"]
 
@@ -77,14 +79,30 @@ def test_sigtest_rates():
     assert s["p"] < 0.05, f"p={s['p']}"
     assert s["groups"][0]["rate"] == 0.12 and s["groups"][1]["rate"] == 0.15, f"rates={s['groups']}"
     lo, hi = s["ci95_diff"]
-    assert lo <= hi, f"ci={lo},{hi}"
+    assert hi < 0, f"ci 应整体在 0 以下：{lo},{hi}"
     assert "显著" in s["conclusion"], f"conclusion={s['conclusion']}"
+
+
+def test_causal_did():
+    d = run_analyze(str(ROOT / "examples/did_panel.csv"),
+                    "--causal", "value,week,group", "--compare", "W4,W5")
+    c = d["causal"]
+    assert "error" not in c, f"error={c.get('error')}"
+    assert c["form"] == "DiD 两重差分"
+    est = c["did_estimate"]
+    assert abs(est - 8) <= 3, f"DiD 估计未回收构造效应：{est}"
+    lo, hi = c["ci95"]
+    assert lo <= 8 <= hi, f"构造效应 8 不在 CI 内：[{lo},{hi}]"
+    assert c["p"] < 0.05, f"p={c['p']}"
+    assert "平行趋势" in c["parallel_trend_check"] or "未验证" in c["parallel_trend_check"]
+    assert any("dowhy" in n for n in c["notes"])
 
 
 def main():
     check("sigtest 两组均值检验", test_sigtest_means)
     check("sigtest n<30 守门", test_sigtest_n30_guard)
     check("sigtest 双比率 z 检验", test_sigtest_rates)
+    check("causal DiD", test_causal_did)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 
