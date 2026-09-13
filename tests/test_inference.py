@@ -98,11 +98,39 @@ def test_causal_did():
     assert any("dowhy" in n for n in c["notes"])
 
 
+def test_causal_interrupt():
+    import numpy as np
+    rng = np.random.default_rng(7)
+    vals = np.round(np.concatenate([rng.normal(100, 3, 8), rng.normal(108, 3, 8)]), 1)
+    days = [f"2026-08-{d:02d}" for d in range(25, 32)] + [f"2026-09-{d:02d}" for d in range(1, 10)]
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("date,value\n" + "\n".join(f"{dt},{v}" for dt, v in zip(days, vals)))
+        path = f.name
+    d = run_analyze(path, "--causal", "value,date", "--interrupt", "2026-09-01")
+    c = d["causal"]
+    assert "error" not in c, f"error={c.get('error')}"
+    assert c["form"] == "中断前后对比"
+    assert abs(c["diff"] - 8) <= 4, f"diff={c['diff']}"
+    assert c["p"] < 0.05, f"p={c['p']}"
+    assert any("同期趋势" in n for n in c["notes"])
+
+
+def test_causal_downgrade():
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("date,value\n2026-08-25,100\n2026-08-26,101\n2026-08-27,99\n")
+        path = f.name
+    d = run_analyze(path, "--causal", "value,date")
+    c = d["causal"]
+    assert "downgrade" in c and "探索性归因" in c["downgrade"]
+
+
 def main():
     check("sigtest 两组均值检验", test_sigtest_means)
     check("sigtest n<30 守门", test_sigtest_n30_guard)
     check("sigtest 双比率 z 检验", test_sigtest_rates)
     check("causal DiD", test_causal_did)
+    check("causal 中断对比", test_causal_interrupt)
+    check("causal 降级指引", test_causal_downgrade)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 

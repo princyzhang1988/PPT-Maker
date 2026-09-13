@@ -770,8 +770,32 @@ def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -
                 "notes": notes}
 
     if len(parts) == 2 and interrupt:
-        # 中断对比：Task 7 实现本分支（此处先落降级错误占位）
-        return {"error": "中断对比分支尚未实现", "downgrade": downgrade}
+        value_col, time_col = parts
+        missing = [c for c in (value_col, time_col) if c not in df.columns]
+        if missing:
+            return {"error": f"中断对比列不存在：{missing}"}
+        d = df.copy()
+        d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
+        d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
+        d = d.dropna(subset=[value_col, time_col]).sort_values(time_col)
+        cut = pd.to_datetime(interrupt)
+        pre = d[d[time_col] < cut][value_col]
+        post = d[d[time_col] >= cut][value_col]
+        if len(pre) < 3 or len(post) < 3:
+            return {"error": f"中断对比要求干预前后各 ≥3 个点（当前 前 {len(pre)} / 后 {len(post)}）",
+                    "downgrade": "干预点前后数据不足 → 探索性描述对比，结论标'暂定'（§I.0 规则 1）"}
+        cm = CompareMeans(DescrStatsW(post), DescrStatsW(pre))
+        lo, hi = cm.tconfint_diff(usevar="unequal")
+        t_stat, p_val = stats.ttest_ind(post, pre, equal_var=False)
+        return {"form": "中断前后对比", "interrupt": interrupt,
+                "pre": {"n": int(len(pre)), "mean": round(float(pre.mean()), 4)},
+                "post": {"n": int(len(post)), "mean": round(float(post.mean()), 4)},
+                "diff": round(float(post.mean() - pre.mean()), 4),
+                "ci95_diff": [round(float(lo), 4), round(float(hi), 4)],
+                "p": round(float(p_val), 4),
+                "notes": ["前后对比未控制同期趋势——有对照组请改用 DiD（§I-8）",
+                          "因果结论须业务确认",
+                          DOWHY_NOTE]}
 
     return {"error": "--causal 参数：指标列,时间列,分组列（DiD，配 --compare）或 指标列,时间列（中断对比，配 --interrupt）",
             "downgrade": downgrade}

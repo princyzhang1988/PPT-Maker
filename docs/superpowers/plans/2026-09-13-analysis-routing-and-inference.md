@@ -634,7 +634,7 @@ git commit -m "feat: analyze.py §I 准实验 DiD（全面板回归，--compare=
 
 ### Task 7: --causal 中断对比（红灯 → 绿灯，/tmp 数据）
 
-> 修正（执行期）：Task 6 只落了中断对比分支的占位 error（`中断对比尚未实现（Task 7）`），本 Task 在 `causal_block` 真正实现该分支（真实红灯 → 绿灯）。
+> 修正（执行期）：Task 6 只落了中断对比分支的占位 error（`中断对比分支尚未实现`），本 Task 在 `causal_block` 真正实现该分支（真实红灯 → 绿灯）。
 
 **Files:**
 - Modify: `tests/test_inference.py`、`analyze.py`
@@ -652,9 +652,10 @@ def test_causal_interrupt():
         path = f.name
     d = run_analyze(path, "--causal", "value,date", "--interrupt", "2026-09-01")
     c = d["causal"]
+    assert "error" not in c, f"error={c.get('error')}"
     assert c["form"] == "中断前后对比"
     assert abs(c["diff"] - 8) <= 4, f"diff={c['diff']}"
-    assert c["p"] < 0.05
+    assert c["p"] < 0.05, f"p={c['p']}"
     assert any("同期趋势" in n for n in c["notes"])
 
 
@@ -667,7 +668,7 @@ def test_causal_downgrade():
     assert "downgrade" in c and "探索性归因" in c["downgrade"]
 ```
 
-`main()` 注册两行：
+`main()` 注册两行（causal DiD check 之后）：
 
 ```python
     check("causal 中断对比", test_causal_interrupt)
@@ -677,13 +678,53 @@ def test_causal_downgrade():
 - [ ] **Step 2: 确认红灯 → 在 `causal_block` 落地中断对比分支 → 转绿**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: 先红（Task 6 占位 `error=中断对比分支尚未实现` → `KeyError: 'form'`）；
-在 `analyze.py` 的 `causal_block` 实现 2 参数 + `--interrupt` 分支后全部 PASS
+Expected: 先红 `FAIL causal 中断对比: error=中断对比分支尚未实现`（降级指引用例此时应已 PASS——2 参数无 interrupt 的报错分支已在 Task 6 落地），exit=1；
+落地实现后 6 条全 PASS，exit=0
+
+把 `causal_block` 里的中断占位分支：
+
+```python
+    if len(parts) == 2 and interrupt:
+        # 中断对比：Task 7 实现本分支（此处先落降级错误占位）
+        return {"error": "中断对比分支尚未实现", "downgrade": downgrade}
+```
+
+替换为：
+
+```python
+    if len(parts) == 2 and interrupt:
+        value_col, time_col = parts
+        missing = [c for c in (value_col, time_col) if c not in df.columns]
+        if missing:
+            return {"error": f"中断对比列不存在：{missing}"}
+        d = df.copy()
+        d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
+        d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
+        d = d.dropna(subset=[value_col, time_col]).sort_values(time_col)
+        cut = pd.to_datetime(interrupt)
+        pre = d[d[time_col] < cut][value_col]
+        post = d[d[time_col] >= cut][value_col]
+        if len(pre) < 3 or len(post) < 3:
+            return {"error": f"中断对比要求干预前后各 ≥3 个点（当前 前 {len(pre)} / 后 {len(post)}）",
+                    "downgrade": "干预点前后数据不足 → 探索性描述对比，结论标'暂定'（§I.0 规则 1）"}
+        cm = CompareMeans(DescrStatsW(post), DescrStatsW(pre))
+        lo, hi = cm.tconfint_diff(usevar="unequal")
+        t_stat, p_val = stats.ttest_ind(post, pre, equal_var=False)
+        return {"form": "中断前后对比", "interrupt": interrupt,
+                "pre": {"n": int(len(pre)), "mean": round(float(pre.mean()), 4)},
+                "post": {"n": int(len(post)), "mean": round(float(post.mean()), 4)},
+                "diff": round(float(post.mean() - pre.mean()), 4),
+                "ci95_diff": [round(float(lo), 4), round(float(hi), 4)],
+                "p": round(float(p_val), 4),
+                "notes": ["前后对比未控制同期趋势——有对照组请改用 DiD（§I-8）",
+                          "因果结论须业务确认",
+                          DOWHY_NOTE]}
+```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add analyze.py tests/test_inference.py && git commit -m "feat: analyze.py §I 中断对比分支 + 验收测试"
+git add analyze.py tests/test_inference.py docs/superpowers/plans/2026-09-13-analysis-routing-and-inference.md && git commit -m "feat: analyze.py §I 中断前后对比（干预日期切分，前后各≥3点，降级指引）"
 ```
 
 ---
