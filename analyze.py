@@ -553,6 +553,9 @@ def _cohen_d(a: pd.Series, b: pd.Series):
 
 
 def _two_group_report(g1: pd.Series, g2: pd.Series, label1: str, label2: str) -> dict:
+    """两组均值检验报告：n<30 只报效应量方向；n≥30 出 Welch t / Mann-Whitney U 与结论。"""
+    if len(g1) == 0 or len(g2) == 0:
+        return {"error": f"某组 coerce 后无有效数值（组1 {len(g1)} 行 / 组2 {len(g2)} 行）"}
     out = {"form": "两组均值检验",
            "group1": {"label": label1, "n": int(len(g1)), "mean": round(float(g1.mean()), 4)},
            "group2": {"label": label2, "n": int(len(g2)), "mean": round(float(g2.mean()), 4)}}
@@ -565,9 +568,11 @@ def _two_group_report(g1: pd.Series, g2: pd.Series, label1: str, label2: str) ->
             "conclusion": "样本不足，差异是否真实待更多数据——标'暂定'",
         })
         return out
+    shapiro_ran = False
     normal = True
     for s in (g1, g2):
         if 3 <= len(s) <= 5000:
+            shapiro_ran = True
             normal = normal and stats.shapiro(s).pvalue >= 0.05
     cm = CompareMeans(DescrStatsW(g1), DescrStatsW(g2))
     lo, hi = cm.tconfint_diff(usevar="unequal")
@@ -579,8 +584,9 @@ def _two_group_report(g1: pd.Series, g2: pd.Series, label1: str, label2: str) ->
                         "ci95_diff": [round(float(lo), 4), round(float(hi), 4)]},
             "mann_whitney_u": {"stat": round(float(u_stat), 4), "p": round(float(p_mw), 4)},
         },
-        "normality": "shapiro 双组 p≥0.05，以 Welch t 为主" if normal
-                     else "至少一组偏离正态，以 Mann-Whitney U 为主",
+        "normality": ("shapiro 双组 p≥0.05，以 Welch t 为主" if normal and shapiro_ran
+                      else "至少一组偏离正态，以 Mann-Whitney U 为主" if shapiro_ran
+                      else "n>5000 未做 Shapiro（大样本渐近下以 Welch t 为主）"),
         "conclusion": ("检出显著差异（p<0.05）" if (p_welch if normal else p_mw) < 0.05
                        else "未检出显著差异（p≥0.05）——不等于无差异，可能是检验力不足"),
     })
@@ -588,7 +594,8 @@ def _two_group_report(g1: pd.Series, g2: pd.Series, label1: str, label2: str) ->
 
 
 def sigtest_block(df: pd.DataFrame, parts: list, compare: list, time_col) -> dict:
-    """--sigtest：2 参数=两组均值检验；3 参数=双比率 z 检验（每行一组）。"""
+    """--sigtest：2 参数=两组均值检验；3 参数=双比率 z 检验（每行一组）；
+    1 参数=指标列，配 --time + --compare 切两期做两组均值检验。"""
     if len(parts) == 3:  # 成功列,总数列,组列
         succ, total, grp = parts
         missing = [c for c in (succ, total, grp) if c not in df.columns]
@@ -605,6 +612,9 @@ def sigtest_block(df: pd.DataFrame, parts: list, compare: list, time_col) -> dic
         if min(n1, n2) <= 0 or s1 > n1 or s2 > n2:
             return {"error": "比率检验数据非法：成功数应 ≤ 总数且总数 > 0"}
         z, p = proportions_ztest([s1, s2], [n1, n2])
+        if not (np.isfinite(z) and np.isfinite(p)):
+            return {"error": "比率检验退化（如两组成功数均为 0）——无法计算检验统计量，"
+                             "请检查数据或积累样本后再检验"}
         p1, p2 = s1 / n1, s2 / n2
         lo, hi = confint_proportions_2indep(s1, n1, s2, n2, method="wald",
                                             compare="diff", alpha=0.05)
@@ -636,8 +646,8 @@ def sigtest_block(df: pd.DataFrame, parts: list, compare: list, time_col) -> dic
         if group_col not in df.columns:
             return {"error": f"分组列不存在：{group_col}"}
         levels = d[group_col].dropna().unique().tolist()
-        if len(levels) > 2:
-            return {"error": f"分组列有 {len(levels)} 组，均值检验恰好需要两组——"
+        if len(levels) != 2:
+            return {"error": f"分组列恰好需要两组（现有 {len(levels)} 组）——"
                              f"请二选一/合并，或全对比需 Bonferroni 校正（§I-7）"}
         g1 = d[d[group_col] == levels[0]][value_col].dropna()
         g2 = d[d[group_col] == levels[1]][value_col].dropna()
@@ -725,7 +735,7 @@ def main() -> None:
             "market": "不可得（未提供竞品/行业数据）",
         }
     else:
-        draft["quality_check"] = {"note": "RFM/留存独立模式：未提供 --metric，跳过指标级清洗与 §A 检查"}
+        draft["quality_check"] = {"note": "独立模式（RFM/留存/检验/因果）：未提供 --metric，跳过指标级清洗与 §A 检查"}
 
     # §H 三步探查：结构 → 漏斗 → 画像
     dims = args.dims.split(",") if args.dims else None
