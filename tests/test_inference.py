@@ -94,7 +94,7 @@ def test_causal_did():
     lo, hi = c["ci95"]
     assert lo <= 8 <= hi, f"构造效应 8 不在 CI 内：[{lo},{hi}]"
     assert c["p"] < 0.05, f"p={c['p']}"
-    assert "平行趋势" in c["parallel_trend_check"] or "未验证" in c["parallel_trend_check"]
+    assert "斜率差" in c["parallel_trend_check"], c["parallel_trend_check"]
     assert any("dowhy" in n for n in c["notes"])
 
 

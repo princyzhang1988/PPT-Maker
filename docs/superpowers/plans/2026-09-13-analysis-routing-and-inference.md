@@ -461,6 +461,7 @@ git add tests/test_inference.py analyze.py && git commit -m "test: 双比率 z �
 ### Task 6: --causal DiD（红灯 → 绿灯）
 
 > 修正（执行期）：--compare 语义=末个干预前期/首个干预后期；全面板回归避免饱和模型（spec 审查发现两期过滤致 CI=NaN）
+> 加固（质量审查修正）：期序数值感知排序（W1..W12 按序号，W10 不再插在 W1 与 W2 之间）+ 组缺失行剔除（不再静默计入对照组）+ 标准误未聚类提示
 
 **Files:**
 - Modify: `tests/test_inference.py`、`analyze.py`
@@ -479,7 +480,7 @@ def test_causal_did():
     lo, hi = c["ci95"]
     assert lo <= 8 <= hi, f"构造效应 8 不在 CI 内：[{lo},{hi}]"
     assert c["p"] < 0.05, f"p={c['p']}"
-    assert "平行趋势" in c["parallel_trend_check"] or "未验证" in c["parallel_trend_check"]
+    assert "斜率差" in c["parallel_trend_check"], c["parallel_trend_check"]
     assert any("dowhy" in n for n in c["notes"])
 ```
 
@@ -500,11 +501,27 @@ Expected: `ERROR causal DiD: KeyError: 'causal'`（调用块还没加）
 DOWHY_NOTE = "若能提供变量因果图（DAG），可安装 dowhy 做 GCM 异动归因——超出本脚本范围（§I-8）"
 
 
+def _floatable(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _period_key(t: str):
+    """数值感知排序键：数字段按数值比较（2 < 10，W2 < W10），非数字段按词法。"""
+    return tuple((0, float(p)) if p.isdigit() else (1, p)
+                 for p in re.split(r"(\d+)", str(t).strip()))
+
+
 def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -> dict:
     """--causal：3 参数=DiD（配 --compare）；2 参数=中断前后对比（配 --interrupt）。
 
     DiD 的 --compare 语义：期1=干预前最后一期，期2=干预后第一期；
-    全面板回归 post = 时间排序 ≥ 期2 的所有期（两期过滤会得到饱和模型，CI/p 无意义）。
+    全面板回归 post = 时间排序 ≥ 期2 的所有期（两期过滤会得到饱和模型，CI/p 无意义）；
+    期序为数值感知排序（全数值或同一前缀+纯序号时按数值，避免 W10 插进 W1 与 W2 之间），
+    无法确定数值序时回退词法序并在 notes 提示确认期序。
     """
     downgrade = "无对照组且无干预点 → 路由降级为探索性归因（--dims 贡献度分解），结论标'暂定'（§I.0 规则 1）"
     if len(parts) == 3 and interrupt is None:
@@ -517,9 +534,16 @@ def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -
                     "downgrade": downgrade}
         d = df.copy()
         d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
-        d = d.dropna(subset=[value_col])
+        d = d.dropna(subset=[value_col, group_col])  # 组缺失行不得静默落入对照组（treat=0）
         d[time_col] = d[time_col].astype(str)
         periods = sorted(d[time_col].unique())
+        stripped = [str(t).strip() for t in periods]
+        ms = [re.fullmatch(r"(\D*)(\d+)", s) for s in stripped]
+        # 期序：全数值或同一前缀+纯序号（W1..W12）时按数值序；否则词法序并提示确认
+        numeric_sorted = (all(_floatable(s) for s in stripped)
+                          or (all(ms) and len({m.group(1) for m in ms}) == 1))
+        periods = sorted(periods, key=_period_key)
+        period_order = "数值序" if numeric_sorted else "词法序（请确认期标签）"
         pre_anchor, post_anchor = compare[0], compare[1]
         if pre_anchor not in periods or post_anchor not in periods:
             return {"error": f"--compare 两期都必须存在于数据：{compare}（现有 {periods}）",
@@ -533,14 +557,16 @@ def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -
         treat_on, control_on = levels[1], levels[0]
         dd = d.copy()
         dd["treat"] = (dd[group_col] == treat_on).astype(int)
-        dd["post"] = (dd[time_col].map(lambda t: periods.index(t) >= periods.index(post_anchor))).astype(int)
+        pos = {t: i for i, t in enumerate(periods)}
+        dd["post"] = dd[time_col].map(lambda t: int(pos[t] >= pos[post_anchor]))
         dd["did"] = dd["treat"] * dd["post"]
+        # 列序约定：[截距, treat, post, treat×post]——params[3]/conf_int()[3]/pvalues[3] 均指交互项
         X = np.column_stack([np.ones(len(dd)), dd["treat"], dd["post"], dd["did"]])
         model = sm.OLS(dd[value_col].values, X).fit()
         ci = model.conf_int()[3]
         # 平行趋势粗检：pre 侧 ≥2 期时，处理/对照各自按期均值做线性拟合，报斜率差
         pre = dd[dd["post"] == 0]
-        pre_periods = sorted(pre[time_col].unique())
+        pre_periods = sorted(pre[time_col].unique(), key=_period_key)
         if len(pre_periods) >= 2:
             piv = pre.pivot_table(index=time_col, columns=group_col, values=value_col,
                                   aggfunc="mean").reindex(pre_periods)
@@ -553,20 +579,25 @@ def causal_block(df: pd.DataFrame, parts: list, compare: list, interrupt: str) -
                 parallel = "未验证（pre 侧面板不完整）——因果结论须业务确认"
         else:
             parallel = "未验证（pre 侧不足两期）——因果结论须业务确认"
+        notes = ["DiD 估计干预效应的前提是平行趋势成立（§I-8）",
+                 "标准误未聚类；面板存在序列相关时 CI 可能偏窄（§I-8）",
+                 "因果结论须业务确认",
+                 DOWHY_NOTE]
+        if not numeric_sorted:
+            notes.append("期标签非连续数值序，请确认期序")
         return {"form": "DiD 两重差分",
+                "period_order": period_order,
                 "treat_group": treat_on, "control_group": control_on,
                 "pre_periods": pre_periods, "post_periods": [t for t in periods if t not in pre_periods],
                 "did_estimate": round(float(model.params[3]), 4),
                 "ci95": [round(float(ci[0]), 4), round(float(ci[1]), 4)],
                 "p": round(float(model.pvalues[3]), 4),
                 "parallel_trend_check": parallel,
-                "notes": ["DiD 估计干预效应的前提是平行趋势成立（§I-8）",
-                          "因果结论须业务确认",
-                          DOWHY_NOTE]}
+                "notes": notes}
 
     if len(parts) == 2 and interrupt:
         # 中断对比：Task 7 实现本分支（此处先落降级错误占位）
-        return {"error": "中断对比尚未实现（Task 7）", "downgrade": downgrade}
+        return {"error": "中断对比分支尚未实现", "downgrade": downgrade}
 
     return {"error": "--causal 参数：指标列,时间列,分组列（DiD，配 --compare）或 指标列,时间列（中断对比，配 --interrupt）",
             "downgrade": downgrade}
@@ -646,7 +677,7 @@ def test_causal_downgrade():
 - [ ] **Step 2: 确认红灯 → 在 `causal_block` 落地中断对比分支 → 转绿**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: 先红（Task 6 占位 `error=中断对比尚未实现（Task 7）` → `KeyError: 'form'`）；
+Expected: 先红（Task 6 占位 `error=中断对比分支尚未实现` → `KeyError: 'form'`）；
 在 `analyze.py` 的 `causal_block` 实现 2 参数 + `--interrupt` 分支后全部 PASS
 
 - [ ] **Step 3: Commit**
