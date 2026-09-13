@@ -24,7 +24,7 @@
 ```bash
 git clone https://github.com/hugohe3/ppt-master   # 依赖本体
 python3 -m venv .venv && .venv/bin/pip install -r ppt-master/requirements.txt -r requirements-lock.txt
-.venv/bin/pip install pandas openpyxl   # analyze.py 依赖
+.venv/bin/pip install pandas openpyxl scipy statsmodels   # analyze.py 依赖
 cp skill/data2ppt-SKILL.md ~/.agents/skills/data2ppt/SKILL.md   # 按需改其中的本机路径
 ```
 

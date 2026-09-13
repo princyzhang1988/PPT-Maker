@@ -24,7 +24,7 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
 
 1. 本文件。
 2. 读 `<项目根目录>/data2ppt.md`（交互流程与质量红线的完整版）。
-3. 读 `<项目根目录>/methodology/analysis-methodology.md`（分析方法论规则库 §A–§H）。
+3. 读 `<项目根目录>/methodology/analysis-methodology.md`（分析方法论规则库 §A–§I）。
 4. 读 `${STYLE_WS}/templates/design_spec.md`（视觉 tokens = §V，流程图样式 = §VIII）。
 5. 生成流程图页前，另读 ppt-master 的 `references/native-shape-authoring.md` 与
    `references/executor-chart.md`；纯图表页读 `references/native-data-interface.md`。
@@ -41,7 +41,8 @@ STYLE_WS   = <项目根目录>/templates/nerdy-green-storytelling
    .venv/bin/python analyze.py <数据> --metric <列> --time <列> \
        [--dims <维度>] [--compare <期1>,<期2>] [--funnel <阶段列>] \
        [--quadrant <X列>,<Y列>] [--rfm <用户列>,<日期列>,<金额列>] \
-       [--retention <用户列>,<日期列>[,<分组列>]]
+       [--retention <用户列>,<日期列>[,<分组列>]] [--sigtest <指标列>[,分组列]] \
+       [--causal <指标列>,<时间列>[,<分组列>]] [--interrupt <日期>]
    ```
    输出 facts 草稿（§H.0 清洗 / §A quality_check / §H 结构→漏斗→画像 / §B 三比），
    AI 复核补全（规则 §A/§B/§H/§I）。
