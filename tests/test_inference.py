@@ -67,9 +67,24 @@ def test_sigtest_n30_guard():
     assert "effect_direction" in s and "暂定" in s["conclusion"]
 
 
+def test_sigtest_rates():
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("group,success,total\nA,120,1000\nB,150,1000\n")
+        path = f.name
+    d = run_analyze(path, "--sigtest", "success,total,group")
+    s = d["sigtest"]
+    assert s["form"] == "两比率 z 检验", f"form={s.get('form')}"
+    assert s["p"] < 0.05, f"p={s['p']}"
+    assert s["groups"][0]["rate"] == 0.12 and s["groups"][1]["rate"] == 0.15, f"rates={s['groups']}"
+    lo, hi = s["ci95_diff"]
+    assert lo <= hi, f"ci={lo},{hi}"
+    assert "显著" in s["conclusion"], f"conclusion={s['conclusion']}"
+
+
 def main():
     check("sigtest 两组均值检验", test_sigtest_means)
     check("sigtest n<30 守门", test_sigtest_n30_guard)
+    check("sigtest 双比率 z 检验", test_sigtest_rates)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 
