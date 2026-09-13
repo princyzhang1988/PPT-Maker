@@ -33,6 +33,9 @@ import sys
 
 import numpy as np
 import pandas as pd
+from scipy import stats
+from statsmodels.stats.proportion import proportions_ztest, confint_proportions_2indep
+from statsmodels.stats.weightstats import CompareMeans, DescrStatsW
 
 # ---------------------------------------------------------------------------
 # §H.0 数据清洗 / 标准化（探查前必跑）
@@ -534,6 +537,126 @@ def rfm_block(df: pd.DataFrame, user_col: str, date_col: str, amount_col: str) -
 
 
 # ---------------------------------------------------------------------------
+# §I 显著性检验（差异是噪声还是真信号：Leek&Peng「推断性」问题的可执行版）
+# ---------------------------------------------------------------------------
+
+SIGTEST_MIN_N = 30  # §A.4 精神：每组 n<30 不输出 p 值，只报效应量方向
+
+
+def _cohen_d(a: pd.Series, b: pd.Series):
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return None  # 单观测组标准差未定义（ddof=1），效应量不可算，防 NaN 漏进 JSON
+    pooled = (((na - 1) * a.std(ddof=1) ** 2 + (nb - 1) * b.std(ddof=1) ** 2)
+              / (na + nb - 2)) ** 0.5
+    return float((a.mean() - b.mean()) / pooled) if pooled else None
+
+
+def _two_group_report(g1: pd.Series, g2: pd.Series, label1: str, label2: str) -> dict:
+    out = {"form": "两组均值检验",
+           "group1": {"label": label1, "n": int(len(g1)), "mean": round(float(g1.mean()), 4)},
+           "group2": {"label": label2, "n": int(len(g2)), "mean": round(float(g2.mean()), 4)}}
+    d = _cohen_d(g1, g2)
+    out["effect_cohens_d"] = round(d, 3) if d is not None else None
+    if len(g1) < SIGTEST_MIN_N or len(g2) < SIGTEST_MIN_N:
+        out.update({
+            "sample_guard": f"每组 n≥{SIGTEST_MIN_N} 才输出 p 值（§A.4）——当前只报效应量方向",
+            "effect_direction": "group1 > group2" if g1.mean() > g2.mean() else "group1 < group2",
+            "conclusion": "样本不足，差异是否真实待更多数据——标'暂定'",
+        })
+        return out
+    normal = True
+    for s in (g1, g2):
+        if 3 <= len(s) <= 5000:
+            normal = normal and stats.shapiro(s).pvalue >= 0.05
+    cm = CompareMeans(DescrStatsW(g1), DescrStatsW(g2))
+    lo, hi = cm.tconfint_diff(usevar="unequal")
+    t_stat, p_welch = stats.ttest_ind(g1, g2, equal_var=False)
+    u_stat, p_mw = stats.mannwhitneyu(g1, g2, alternative="two-sided")
+    out.update({
+        "tests": {
+            "welch_t": {"stat": round(float(t_stat), 4), "p": round(float(p_welch), 4),
+                        "ci95_diff": [round(float(lo), 4), round(float(hi), 4)]},
+            "mann_whitney_u": {"stat": round(float(u_stat), 4), "p": round(float(p_mw), 4)},
+        },
+        "normality": "shapiro 双组 p≥0.05，以 Welch t 为主" if normal
+                     else "至少一组偏离正态，以 Mann-Whitney U 为主",
+        "conclusion": ("检出显著差异（p<0.05）" if (p_welch if normal else p_mw) < 0.05
+                       else "未检出显著差异（p≥0.05）——不等于无差异，可能是检验力不足"),
+    })
+    return out
+
+
+def sigtest_block(df: pd.DataFrame, parts: list, compare: list, time_col) -> dict:
+    """--sigtest：2 参数=两组均值检验；3 参数=双比率 z 检验（每行一组）。"""
+    if len(parts) == 3:  # 成功列,总数列,组列
+        succ, total, grp = parts
+        missing = [c for c in (succ, total, grp) if c not in df.columns]
+        if missing:
+            return {"error": f"比率检验列不存在：{missing}"}
+        d = df[[succ, total, grp]].copy()
+        for c in (succ, total):
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+        d = d.dropna()
+        if len(d) < 2:
+            return {"error": "比率检验需要 ≥2 行（每行一组）"}
+        (g1, s1, n1), (g2, s2, n2) = [(str(r[grp]), float(r[succ]), float(r[total]))
+                                      for _, r in d.head(2).iterrows()]
+        if min(n1, n2) <= 0 or s1 > n1 or s2 > n2:
+            return {"error": "比率检验数据非法：成功数应 ≤ 总数且总数 > 0"}
+        z, p = proportions_ztest([s1, s2], [n1, n2])
+        p1, p2 = s1 / n1, s2 / n2
+        lo, hi = confint_proportions_2indep(s1, n1, s2, n2, method="wald",
+                                            compare="diff", alpha=0.05)
+        out = {"form": "两比率 z 检验",
+               "groups": [{"group": g1, "success": s1, "total": n1, "rate": round(p1, 4)},
+                          {"group": g2, "success": s2, "total": n2, "rate": round(p2, 4)}],
+               "z_stat": round(float(z), 4), "p": round(float(p), 4),
+               "abs_rate_diff": round(abs(p1 - p2), 4),
+               "ci95_diff": [round(float(lo), 4), round(float(hi), 4)],
+               "conclusion": ("两比率差异显著（p<0.05）" if p < 0.05
+                              else "未检出显著差异（p≥0.05）——不等于无差异")}
+        if len(d) > 2:
+            out["multiple_comparison_note"] = (f"共 {len(d)} 组只比了前两组——"
+                                               f"两两全比需 Bonferroni 校正（阈值 α/{len(d)}）")
+        return out
+
+    if len(parts) == 2:
+        value_col, group_col = parts
+    elif len(parts) == 1:
+        value_col, group_col = parts[0], None
+    else:
+        return {"error": "--sigtest 参数：指标列[,分组列] 或 成功列,总数列,组列"}
+    if value_col not in df.columns:
+        return {"error": f"指标列不存在：{value_col}"}
+    d = df.copy()
+    d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
+
+    if group_col:
+        if group_col not in df.columns:
+            return {"error": f"分组列不存在：{group_col}"}
+        levels = d[group_col].dropna().unique().tolist()
+        if len(levels) > 2:
+            return {"error": f"分组列有 {len(levels)} 组，均值检验恰好需要两组——"
+                             f"请二选一/合并，或全对比需 Bonferroni 校正（§I-7）"}
+        g1 = d[d[group_col] == levels[0]][value_col].dropna()
+        g2 = d[d[group_col] == levels[1]][value_col].dropna()
+        return _two_group_report(g1, g2, str(levels[0]), str(levels[1]))
+
+    # 无分组列：--time + --compare 两期切
+    if not (compare and time_col):
+        return {"error": "均值检验需要分组列，或 --time + --compare 指定两期"}
+    d[time_col] = d[time_col].astype(str)
+    d = d[d[time_col].isin(compare)]
+    periods = sorted(d[time_col].unique())
+    if len(periods) != 2:
+        return {"error": f"--compare 需在数据中恰有两期：{compare}（现有 {periods}）"}
+    g1 = d[d[time_col] == periods[0]][value_col].dropna()
+    g2 = d[d[time_col] == periods[1]][value_col].dropna()
+    return _two_group_report(g1, g2, periods[0], periods[1])
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -551,6 +674,9 @@ def main() -> None:
     ap.add_argument("--cuts", help="象限分界线 X,Y（默认取各自中位数）")
     ap.add_argument("--rfm", help="§I RFM 用户级订单列，逗号分隔：用户列,日期列,金额列")
     ap.add_argument("--retention", help="§I 留存用户级明细列，逗号分隔：用户列,日期列[,分组列]")
+    ap.add_argument("--sigtest", help="§I 显著性检验：指标列[,分组列]（均值）或 成功列,总数列,组列（比率）")
+    ap.add_argument("--causal", help="§I 准实验归因：指标列,时间列,分组列（DiD，配 --compare）或 指标列,时间列（中断对比，配 --interrupt）")
+    ap.add_argument("--interrupt", help="中断对比的干预日期 YYYY-MM-DD")
     ap.add_argument("--out", help="输出 JSON 路径（默认打印 stdout）")
     args = ap.parse_args()
 
@@ -566,7 +692,7 @@ def main() -> None:
         if metric:
             draft["open_questions"] = [f"未指定 --metric，默认取第一个数值列 '{metric}'，请确认"]
     # 只跑 RFM/留存时不需要指标列，跳过指标级清洗与 §A 检查
-    standalone = args.rfm or args.retention
+    standalone = args.rfm or args.retention or args.sigtest or args.causal
     if (metric is None or metric not in df.columns) and not standalone:
         print(json.dumps({"error": f"找不到数值型指标列（{args.metric}）；用 --metric 指定"}, ensure_ascii=False))
         sys.exit(1)
@@ -620,6 +746,11 @@ def main() -> None:
     # §H 画像（有维度即出画像，与结构互补：结构看排名，画像看构成/集中度）
     if dims and have_metric:
         draft["profile"] = profile_block(df_int, dims, metric)
+
+    # §I 显著性检验（推断性问题：差异是噪声还是真信号）
+    if args.sigtest:
+        parts = [c.strip() for c in args.sigtest.split(",")]
+        draft["sigtest"] = sigtest_block(df, parts, compare, time_col)
 
     # §I 象限（分析对象由 --dims 指定，两指标切四象限）
     if args.quadrant:
