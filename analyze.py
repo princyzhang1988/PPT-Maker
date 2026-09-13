@@ -203,7 +203,8 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
     """两期对比时按维度分解贡献度（方法论：贡献度 = 本期-上期，按维度下钻）。
 
     每期原始行数 ≥8 时附 Bootstrap 95% CI（按行放回重采样 1000 次，种子 42 可复现）；
-    行数不足则 contribution_ci95=None 并在 note 说明（样本太少区间无意义）。
+    行数不足则 contribution_ci95=None 并在 note 说明（样本太少区间无意义）；
+    某维度在重采样中无有效样本（某期被完全淘汰）时该维度 CI 亦为 None。
     """
     d = df.copy()
     if compare:
@@ -245,7 +246,8 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
     for dim_key, row in wide.iterrows():
         dim_vals = dim_key if isinstance(dim_key, tuple) else (dim_key,)
         # ci_map 的 key 与 pivot_table(index=dims) 索引同源（单维度标量/多维度元组），
-        # 与 iterrows 的原始 key 同型，直接用原始 key 查表；归一化后的元组会查空单维度键
+        # 与 iterrows 的原始 key 同型，直接用原始 key 查表；归一化后的元组会查空单维度键。
+        # ci_vals 为空（每期 <8 行未跑 Bootstrap，或该维度在某期重采样中被完全淘汰）→ CI=None
         ci_vals = ci_map.get(dim_key, []) if boot_ok else []
         rows.append({
             "dims": dict(zip(dims, [str(v) for v in dim_vals])),
@@ -255,7 +257,7 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
             "contribution_ci95": (
                 [round(float(np.percentile(ci_vals, 2.5)), 1),
                  round(float(np.percentile(ci_vals, 97.5)), 1)]
-                if len(ci_vals) >= 100 else None),
+                if ci_vals else None),
         })
     return {"periods": [p0, p1], "total_delta": round(float(total), 4), "by_dim": rows,
             "note": ("负贡献排在最前；贡献度只回答'哪里变了'，不回答'为什么'——归因需假设验证"

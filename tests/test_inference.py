@@ -127,10 +127,10 @@ def test_causal_downgrade():
     assert "downgrade" in c and "探索性归因" in c["downgrade"]
 
 
-def test_contribution_bootstrap_ci():
-    # gmv_attribution.csv 是单期归因表（factor,delta_wan,note，无时间列），
-    # 不满足贡献度分解的两期结构——按预案用 /tmp 造 2 期 × 4 因子 × 每期 3 行面板
-    # （每期 12 行 ≥8，Bootstrap 才有意义）。
+def _write_gmv_panel():
+    """gmv_attribution.csv 是单期归因表（factor,delta_wan,note，无时间列），不满足
+    贡献度分解的两期结构——按预案用 /tmp 造 2 期 × 4 因子 × 每期 3 行面板
+    （每期 12 行 ≥8，Bootstrap 才有意义）。"""
     rows = ["period,factor,gmv_wan"]
     base = {"渠道A": 100.0, "渠道B": 80.0, "渠道C": 60.0, "渠道D": 40.0}
     for period, mult in (("W25", 1.0), ("W26", 1.1)):
@@ -139,7 +139,11 @@ def test_contribution_bootstrap_ci():
                 rows.append(f"{period},{factor},{round(v * mult + k, 1)}")
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
         f.write("\n".join(rows))
-        path = f.name
+        return f.name
+
+
+def test_contribution_bootstrap_ci():
+    path = _write_gmv_panel()
     d = run_analyze(path, "--metric", "gmv_wan", "--time", "period",
                     "--dims", "factor", "--compare", "W25,W26")
     c = d["contribution"]
@@ -151,9 +155,33 @@ def test_contribution_bootstrap_ci():
         assert ci is not None, f"缺 CI 字段：{r}"
         lo, hi = ci
         assert lo <= hi, f"CI 无序：{r}"
-        pct = r["contribution_pct"]
-        assert lo - 1e-9 <= pct <= hi + 1e-9 or True  # 点估计通常落在 CI 内，宽松防抽样边界
-    assert any("Bootstrap" in n for n in [c.get("note", "")])
+        assert lo <= r["contribution_pct"] <= hi, f"点估计应落在 CI 内：{r}"  # 种子 42 确定性
+    assert "Bootstrap" in c["note"], c["note"]
+
+
+def test_contribution_bootstrap_reproducible():
+    # 种子 42：同一面板两次独立运行（各起一个 subprocess），CI 必须逐值相等
+    path = _write_gmv_panel()
+    args = ("--metric", "gmv_wan", "--time", "period",
+            "--dims", "factor", "--compare", "W25,W26")
+    c1 = run_analyze(path, *args)["contribution"]
+    c2 = run_analyze(path, *args)["contribution"]
+    assert "error" not in c1, f"error={c1.get('error')}"
+    assert all(r["contribution_ci95"] is not None for r in c1["by_dim"]), c1["by_dim"]
+    assert [r["contribution_ci95"] for r in c1["by_dim"]] == \
+           [r["contribution_ci95"] for r in c2["by_dim"]], "两次运行 CI 应逐值一致（种子 42）"
+
+    # 守门路径：每期各 2 行（<8）→ Bootstrap 无意义，ci95 全 None 且 note 说明
+    small = ["period,factor,gmv_wan",
+             "W25,渠道A,100.0", "W25,渠道B,80.0",
+             "W26,渠道A,110.0", "W26,渠道B,88.0"]
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("\n".join(small))
+        small_path = f.name
+    s = run_analyze(small_path, *args)["contribution"]
+    assert "error" not in s, f"error={s.get('error')}"
+    assert all(r["contribution_ci95"] is None for r in s["by_dim"]), s["by_dim"]
+    assert "<8" in s["note"], s["note"]
 
 
 def main():
@@ -164,6 +192,7 @@ def main():
     check("causal 中断对比", test_causal_interrupt)
     check("causal 降级指引", test_causal_downgrade)
     check("contribution Bootstrap CI", test_contribution_bootstrap_ci)
+    check("contribution Bootstrap 可复现/守门", test_contribution_bootstrap_reproducible)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 

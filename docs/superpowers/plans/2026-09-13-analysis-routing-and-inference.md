@@ -749,10 +749,10 @@ git add analyze.py tests/test_inference.py docs/superpowers/plans/2026-09-13-ana
 - [ ] **Step 1: 追加失败测试**（`test_causal_downgrade` 之后；实际落地版如下）
 
 ```python
-def test_contribution_bootstrap_ci():
-    # gmv_attribution.csv 是单期归因表（factor,delta_wan,note，无时间列），
-    # 不满足贡献度分解的两期结构——按预案用 /tmp 造 2 期 × 4 因子 × 每期 3 行面板
-    # （每期 12 行 ≥8，Bootstrap 才有意义）。
+def _write_gmv_panel():
+    """gmv_attribution.csv 是单期归因表（factor,delta_wan,note，无时间列），不满足
+    贡献度分解的两期结构——按预案用 /tmp 造 2 期 × 4 因子 × 每期 3 行面板
+    （每期 12 行 ≥8，Bootstrap 才有意义）。"""
     rows = ["period,factor,gmv_wan"]
     base = {"渠道A": 100.0, "渠道B": 80.0, "渠道C": 60.0, "渠道D": 40.0}
     for period, mult in (("W25", 1.0), ("W26", 1.1)):
@@ -761,7 +761,11 @@ def test_contribution_bootstrap_ci():
                 rows.append(f"{period},{factor},{round(v * mult + k, 1)}")
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
         f.write("\n".join(rows))
-        path = f.name
+        return f.name
+
+
+def test_contribution_bootstrap_ci():
+    path = _write_gmv_panel()
     d = run_analyze(path, "--metric", "gmv_wan", "--time", "period",
                     "--dims", "factor", "--compare", "W25,W26")
     c = d["contribution"]
@@ -773,9 +777,8 @@ def test_contribution_bootstrap_ci():
         assert ci is not None, f"缺 CI 字段：{r}"
         lo, hi = ci
         assert lo <= hi, f"CI 无序：{r}"
-        pct = r["contribution_pct"]
-        assert lo - 1e-9 <= pct <= hi + 1e-9 or True  # 点估计通常落在 CI 内，宽松防抽样边界
-    assert any("Bootstrap" in n for n in [c.get("note", "")])
+        assert lo <= r["contribution_pct"] <= hi, f"点估计应落在 CI 内：{r}"  # 种子 42 确定性
+    assert "Bootstrap" in c["note"], c["note"]
 ```
 
 `main()` 注册（最后一条 check 之后）：`check("contribution Bootstrap CI", test_contribution_bootstrap_ci)`。（用 `r.get(...)` 而非 `r[...]`：红灯阶段缺字段应报 FAIL 的「缺 CI 字段」而非 KeyError 的 ERROR。）
@@ -783,7 +786,7 @@ def test_contribution_bootstrap_ci():
 - [ ] **Step 2: 运行确认失败**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: 7 条 PASS + `FAIL contribution Bootstrap CI: 缺 CI 字段：{...}`，退出码 1（实跑一致）
+Expected: 6 条 PASS + 1 条 FAIL（`FAIL contribution Bootstrap CI: 缺 CI 字段：{...}`），退出码 1（实跑一致；套件当时共 7 条 check——初版文档误记「7 条 PASS」）
 
 - [ ] **Step 3: 修改 `contribution_block`：在 `rows` 组装循环之前加 Bootstrap，循环内每行加 CI**
 
@@ -820,7 +823,8 @@ Expected: 7 条 PASS + `FAIL contribution Bootstrap CI: 缺 CI 字段：{...}`�
     for dim_key, row in wide.iterrows():
         dim_vals = dim_key if isinstance(dim_key, tuple) else (dim_key,)
         # ci_map 的 key 与 pivot_table(index=dims) 索引同源（单维度标量/多维度元组），
-        # 与 iterrows 的原始 key 同型，直接用原始 key 查表；归一化后的元组会查空单维度键
+        # 与 iterrows 的原始 key 同型，直接用原始 key 查表；归一化后的元组会查空单维度键。
+        # ci_vals 为空（每期 <8 行未跑 Bootstrap，或该维度在某期重采样中被完全淘汰）→ CI=None
         ci_vals = ci_map.get(dim_key, []) if boot_ok else []
         rows.append({
             "dims": dict(zip(dims, [str(v) for v in dim_vals])),
@@ -830,7 +834,7 @@ Expected: 7 条 PASS + `FAIL contribution Bootstrap CI: 缺 CI 字段：{...}`�
             "contribution_ci95": (
                 [round(float(np.percentile(ci_vals, 2.5)), 1),
                  round(float(np.percentile(ci_vals, 97.5)), 1)]
-                if len(ci_vals) >= 100 else None),
+                if ci_vals else None),
         })
 ```
 
@@ -843,13 +847,13 @@ Expected: 7 条 PASS + `FAIL contribution Bootstrap CI: 缺 CI 字段：{...}`�
 ```
 
 执行期实测修正两处（相对原计划代码块的偏差，实测驱动）：
-1. **`pct_b` 加 `.dropna()`**：放回重采样可能漏掉某维度某期的全部行（每因子每期概率 ≈ 0.75¹² ≈ 3.2%），pivot 后该维度 delta 为 NaN；测试面板实测 1000 次重采样中 239 次至少一个维度 delta 为 NaN，不剔除会让 `np.percentile` 返回 NaN 污染 CI。剔除后各因子仍得 926~937 个样本，≥100 门槛充足。
+1. **`pct_b` 加 `.dropna()`**：放回重采样可能漏掉某维度某期的全部行（每因子每期概率 ≈ 0.75¹² ≈ 3.2%），pivot 后该维度 delta 为 NaN；测试面板实测 1000 次重采样中 239 次至少一个维度 delta 为 NaN，不剔除会让 `np.percentile` 返回 NaN 污染 CI。剔除后各因子仍得 926~937 个样本。
 2. **`dim_vals` 类型统一**：`wide.iterrows()` 的原始 key 与 `pct_b.items()` 的 key 都来自 `pivot_table(index=dims)` 索引——单维度是标量、多维度是元组，天然同型；循环内归一化成元组的 `dim_vals` 只用于 `dims` 字典，查表必须用原始 `dim_key`（用元组查单维度标量键会全部落空）。多维度（factor,region 共 8 组全命中 CI）与可复现性（种子 42 两次运行 CI 完全一致）均实测通过。
 
 - [ ] **Step 4: 跑测试转绿 + 全量回归**
 
 Run: `.venv/bin/python tests/test_inference.py`
-Expected: ALL PASS（8/8，实跑一致）
+Expected: ALL PASS（7/7，实跑一致——初版文档误记「8/8」，套件当时共 7 条 check）
 
 Run: `.venv/bin/python analyze.py examples/gmv_weekly.csv --metric gmv_wan --time week > /tmp/reg8.json && .venv/bin/python -c "import json; d=json.load(open('/tmp/reg8.json')); assert sorted(d.keys())==['data_cleaning','input','quality_check','sanbi']; print('回归 OK')"`
 Expected: `回归 OK`（无 --dims 不触发 contribution，实跑一致）
@@ -858,10 +862,15 @@ Run: `.venv/bin/python analyze.py examples/gmv_attribution.csv --metric delta_wa
 Expected: `attribution 单期路径 OK`
 （执行期修正：原断言写 `'contribution' not in d`，实测 main() 在 `--dims` 无 `--time` 时本就输出 `contribution={"error": ...}` 指引并兜底 category_rank，改前改后行为一致（git stash 实证）——系原计划对路由的误设，断言按实际语义修正。）
 
+> **质量加固轮（2026-09-12，审查修正，一并落地）**：
+> 1. **点估计断言去重言**：初版 `assert lo - 1e-9 <= pct <= hi + 1e-9 or True` 因 `or True` 恒真（重言断言，测不出问题），改为严格包含 `assert lo <= r["contribution_pct"] <= hi`（种子 42 确定性，实测 4 个维度点估计都落在 CI 内）；note 断言同步简化为 `assert "Bootstrap" in c["note"]`。
+> 2. **新增 `test_contribution_bootstrap_reproducible`**（面板构造抽为 `_write_gmv_panel()` 供两用例复用；main() 再注册 `check("contribution Bootstrap 可复现/守门", ...)`）：同一面板跑两次 analyze.py 断言 by_dim contribution_ci95 逐值相等（先断言非 None 防空等式），并附守门路径——每期各 2 行（<8）的 /tmp 小文件再跑一次，断言全部 contribution_ci95 为 None 且 note 含「<8」。加固后套件共 8 条 check，ALL PASS。
+> 3. **CI 门槛简化**：`len(ci_vals) >= 100` 改为 `if ci_vals:`——放回重采样对维度的保留下限实测约 400（最劣 qualifying 面板：每期 8 行且该维度仅 1 行，保留下限 434/1000），≥100 永不触发、徒增虚假信心；ci_vals 为空（维度在某期重采样中被完全淘汰）→ None，注释同步说明。
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add analyze.py tests/test_inference.py docs/superpowers/plans/2026-09-13-analysis-routing-and-inference.md && git commit -m "feat: 贡献度分解加 Bootstrap 95% CI（每期≥8 行才计算，种子 42 可复现）"
+git add analyze.py tests/test_inference.py docs/superpowers/plans/2026-09-13-analysis-routing-and-inference.md && git commit -m "fix: Bootstrap CI 测试加固（严格包含断言/可复现性/守门路径）+ 门槛修正 + 文档计数"
 ```
 
 ---
