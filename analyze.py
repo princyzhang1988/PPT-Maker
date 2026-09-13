@@ -222,6 +222,9 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
         return {"error": f"贡献度分解需要恰有两个期间（{time_col} 现有 {periods}），用 --compare 指定"}
     p0, p1 = periods
     wide = d.pivot_table(index=dims, columns=time_col, values=metric_col, aggfunc="sum")
+    # 单期缺席的维度按 0 计（如新市场只在本期出现）——直接相减会产生 NaN delta，
+    # 被 sum 静默跳过而扭曲总额（实测案例：-99,755 vs 真值 -97,373）
+    wide = wide.fillna(0)
     wide["delta"] = wide[p1] - wide[p0]
     total = wide["delta"].sum()
     # §I-8 附属：贡献度 Bootstrap 95% CI（按原始行放回重采样；每期 <8 行无意义则跳过）
@@ -238,6 +241,7 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
                                                 values=metric_col, aggfunc="sum")
             if p0 not in w.columns or p1 not in w.columns:
                 continue
+            w = w.fillna(0)  # 与主路径同口径：重采样缺席的维度该期按 0 计
             delta_b = w[p1] - w[p0]
             t = delta_b.sum()
             if not t:
@@ -268,7 +272,8 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
     return {"periods": [p0, p1], "total_delta": round(float(total), 4), "by_dim": rows,
             "note": ("负贡献排在最前；贡献度只回答'哪里变了'，不回答'为什么'——归因需假设验证"
                      + ("；contribution_ci95 为 Bootstrap 95% 区间（按行放回重采样 1000 次）"
-                        if boot_ok else "；每期行数 <8，Bootstrap CI 无意义未计算"))}
+                        if boot_ok else "；每期行数 <8，Bootstrap CI 无意义未计算")
+                     + "；单期缺席的维度按 0 计入")}
 
 
 def category_rank_block(df: pd.DataFrame, dims: list, metric_col: str) -> dict:

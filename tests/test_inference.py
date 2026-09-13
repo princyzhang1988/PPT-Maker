@@ -184,6 +184,23 @@ def test_contribution_bootstrap_reproducible():
     assert "<8" in s["note"], s["note"]
 
 
+def test_contribution_one_sided_dim():
+    # 实测发现的 bug：维度只在单期出现时 delta=NaN 被 sum 静默跳过，总额被扭曲
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("period,factor,value\n"
+                "W1,A,100\nW1,B,50\n"      # A/B 两期都有
+                "W2,A,90\nW2,B,60\nW2,C,30\n")  # C 仅在 W2 出现
+        path = f.name
+    d = run_analyze(path, "--metric", "value", "--time", "period",
+                    "--dims", "factor", "--compare", "W1,W2")
+    c = d["contribution"]
+    assert "error" not in c, f"error={c.get('error')}"
+    # 真值：(90+60+30) - (100+50) = 30；C 的 delta=+30 不得被跳过
+    assert abs(c["total_delta"] - 30) < 0.01, f"total={c['total_delta']} 应为 30"
+    c_row = next(r for r in c["by_dim"] if r["dims"] == {"factor": "C"})
+    assert c_row["delta"] == 30.0, "单期维度 C 应按 0 基准计入"
+
+
 def main():
     check("sigtest 两组均值检验", test_sigtest_means)
     check("sigtest n<30 守门", test_sigtest_n30_guard)
@@ -193,6 +210,7 @@ def main():
     check("causal 降级指引", test_causal_downgrade)
     check("contribution Bootstrap CI", test_contribution_bootstrap_ci)
     check("contribution Bootstrap 可复现/守门", test_contribution_bootstrap_reproducible)
+    check("contribution 单期维度按 0 计", test_contribution_one_sided_dim)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 
