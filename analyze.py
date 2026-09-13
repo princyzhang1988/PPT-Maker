@@ -10,18 +10,24 @@
 - §A 数据可信前置检查：CV 稳定性阈值、3σ/IQR 异常值（link_check 留人工）
 - 趋势：时间序列的最新变化幅度、最大涨跌
 - §B 三比：自己比（同比/环比/定基）实算；标杆比/市场比标注不可得原因
-- §I 六法实跑（「分析方式提案」确认点的可执行项）：
+- §I 八法实跑（「分析方式提案」确认点的可执行项）：
   - 象限：--quadrant X,Y 配合 --dims，两指标切四象限（中位数分界，|r|>0.8 退化告警）
   - 留存：--retention 用户,日期[,分组]，按首次活跃日分 cohort，算次日/7日/30日留存
   - RFM：--rfm 用户,日期,金额，R/F/M 中位数切分八群，输出各群人数与营收占比
+  - 显著性检验：--sigtest 指标列[,分组列]（两组均值）或 成功列,总数列,组列（双比率
+    z 检验）；每组 n<30 不输出 p 值，只报效应量方向（§A.4）
+  - 准实验归因：--causal 指标列,时间列,分组列（DiD，配 --compare）或 指标列,时间列
+    （中断对比，配 --interrupt），输出效应与 CI 及平行趋势/前提检查
 
 用法：
   .venv/bin/python analyze.py <data.csv> [--metric 指标列] [--time 时间列] \
       [--dims 维度列1,维度列2] [--compare 期1,期2] [--funnel 阶段列1,阶段列2,...] \
       [--quadrant X列,Y列] [--cuts X界,Y界] [--rfm 用户列,日期列,金额列] \
-      [--retention 用户列,日期列[,分组列]] [--out facts_draft.json]
+      [--retention 用户列,日期列[,分组列]] [--sigtest 指标列[,分组列]] \
+      [--causal 指标列,时间列[,分组列]] [--interrupt YYYY-MM-DD] [--out facts_draft.json]
 
-只跑 --rfm / --retention 时可以不提供 --metric（跳过指标级清洗与 §A 检查）。
+只跑 --rfm / --retention / --sigtest / --causal 时可以不提供 --metric
+（跳过指标级清洗与 §A 检查）。
 输出 JSON 到 --out（默认打印 stdout）。**草稿仅供 AI 复核补充，不直接作为
 facts.json 使用**——业务口径、caveats、决策框架仍由分析者补全。
 数值列带单位后缀（如 gmv_wan）时，脚本自动归一化到绝对量基准后再计算，
