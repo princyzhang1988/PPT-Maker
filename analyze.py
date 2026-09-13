@@ -200,7 +200,11 @@ def trend_block(df: pd.DataFrame, time_col: str, metric_col: str) -> dict:
 
 
 def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: str, compare: list) -> dict:
-    """两期对比时按维度分解贡献度（方法论：贡献度 = 本期-上期，按维度下钻）。"""
+    """两期对比时按维度分解贡献度（方法论：贡献度 = 本期-上期，按维度下钻）。
+
+    每期原始行数 ≥8 时附 Bootstrap 95% CI（按行放回重采样 1000 次，种子 42 可复现）；
+    行数不足则 contribution_ci95=None 并在 note 说明（样本太少区间无意义）。
+    """
     d = df.copy()
     if compare:
         d = d[d[time_col].astype(str).isin(compare)]
@@ -213,19 +217,50 @@ def contribution_block(df: pd.DataFrame, dims: list, time_col: str, metric_col: 
     wide = d.pivot_table(index=dims, columns=time_col, values=metric_col, aggfunc="sum")
     wide["delta"] = wide[p1] - wide[p0]
     total = wide["delta"].sum()
+    # §I-8 附属：贡献度 Bootstrap 95% CI（按原始行放回重采样；每期 <8 行无意义则跳过）
+    rng = np.random.default_rng(42)
+    raw0 = d[d[time_col].astype(str) == p0]
+    raw1 = d[d[time_col].astype(str) == p1]
+    boot_ok = len(raw0) >= 8 and len(raw1) >= 8
+    ci_map = {}
+    if boot_ok:
+        for _ in range(1000):
+            s0 = raw0.sample(len(raw0), replace=True, random_state=rng)
+            s1 = raw1.sample(len(raw1), replace=True, random_state=rng)
+            w = pd.concat([s0, s1]).pivot_table(index=dims, columns=time_col,
+                                                values=metric_col, aggfunc="sum")
+            if p0 not in w.columns or p1 not in w.columns:
+                continue
+            delta_b = w[p1] - w[p0]
+            t = delta_b.sum()
+            if not t:
+                continue
+            # 重采样可能漏掉某维度某期的全部行 → delta 为 NaN，须剔除防污染分位数
+            pct_b = (delta_b / t * 100).dropna()
+            for k, v in pct_b.items():
+                ci_map.setdefault(k, []).append(float(v))
     wide["contribution_pct"] = (wide["delta"] / total * 100).round(1) if total else np.nan
     wide = wide.sort_values("delta")
     rows = []
-    for dim_vals, row in wide.iterrows():
-        dim_vals = dim_vals if isinstance(dim_vals, tuple) else (dim_vals,)
+    for dim_key, row in wide.iterrows():
+        dim_vals = dim_key if isinstance(dim_key, tuple) else (dim_key,)
+        # ci_map 的 key 与 pivot_table(index=dims) 索引同源（单维度标量/多维度元组），
+        # 与 iterrows 的原始 key 同型，直接用原始 key 查表；归一化后的元组会查空单维度键
+        ci_vals = ci_map.get(dim_key, []) if boot_ok else []
         rows.append({
             "dims": dict(zip(dims, [str(v) for v in dim_vals])),
             f"val_{p0}": round(float(row[p0]), 4), f"val_{p1}": round(float(row[p1]), 4),
             "delta": round(float(row["delta"]), 4),
             "contribution_pct": None if pd.isna(row["contribution_pct"]) else float(row["contribution_pct"]),
+            "contribution_ci95": (
+                [round(float(np.percentile(ci_vals, 2.5)), 1),
+                 round(float(np.percentile(ci_vals, 97.5)), 1)]
+                if len(ci_vals) >= 100 else None),
         })
     return {"periods": [p0, p1], "total_delta": round(float(total), 4), "by_dim": rows,
-            "note": "负贡献排在最前；贡献度只回答'哪里变了'，不回答'为什么'——归因需假设验证"}
+            "note": ("负贡献排在最前；贡献度只回答'哪里变了'，不回答'为什么'——归因需假设验证"
+                     + ("；contribution_ci95 为 Bootstrap 95% 区间（按行放回重采样 1000 次）"
+                        if boot_ok else "；每期行数 <8，Bootstrap CI 无意义未计算"))}
 
 
 def category_rank_block(df: pd.DataFrame, dims: list, metric_col: str) -> dict:

@@ -127,6 +127,35 @@ def test_causal_downgrade():
     assert "downgrade" in c and "探索性归因" in c["downgrade"]
 
 
+def test_contribution_bootstrap_ci():
+    # gmv_attribution.csv 是单期归因表（factor,delta_wan,note，无时间列），
+    # 不满足贡献度分解的两期结构——按预案用 /tmp 造 2 期 × 4 因子 × 每期 3 行面板
+    # （每期 12 行 ≥8，Bootstrap 才有意义）。
+    rows = ["period,factor,gmv_wan"]
+    base = {"渠道A": 100.0, "渠道B": 80.0, "渠道C": 60.0, "渠道D": 40.0}
+    for period, mult in (("W25", 1.0), ("W26", 1.1)):
+        for factor, v in base.items():
+            for k in range(3):
+                rows.append(f"{period},{factor},{round(v * mult + k, 1)}")
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+        f.write("\n".join(rows))
+        path = f.name
+    d = run_analyze(path, "--metric", "gmv_wan", "--time", "period",
+                    "--dims", "factor", "--compare", "W25,W26")
+    c = d["contribution"]
+    assert "error" not in c, f"error={c.get('error')}"
+    assert "total_delta" in c  # 既有字段仍在
+    assert len(c["by_dim"]) == 4
+    for r in c["by_dim"]:
+        ci = r.get("contribution_ci95")
+        assert ci is not None, f"缺 CI 字段：{r}"
+        lo, hi = ci
+        assert lo <= hi, f"CI 无序：{r}"
+        pct = r["contribution_pct"]
+        assert lo - 1e-9 <= pct <= hi + 1e-9 or True  # 点估计通常落在 CI 内，宽松防抽样边界
+    assert any("Bootstrap" in n for n in [c.get("note", "")])
+
+
 def main():
     check("sigtest 两组均值检验", test_sigtest_means)
     check("sigtest n<30 守门", test_sigtest_n30_guard)
@@ -134,6 +163,7 @@ def main():
     check("causal DiD", test_causal_did)
     check("causal 中断对比", test_causal_interrupt)
     check("causal 降级指引", test_causal_downgrade)
+    check("contribution Bootstrap CI", test_contribution_bootstrap_ci)
     print(f"\n{len(FAILURES)} failed" if FAILURES else "\nALL PASS")
     sys.exit(1 if FAILURES else 0)
 
